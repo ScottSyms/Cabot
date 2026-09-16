@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "WebWorker"],
+    "strict": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@cabot/contracts": ["packages/contracts/src/index.ts"],
+      "@cabot/contracts/*": ["packages/contracts/src/*"],
+      "@cabot/storage": ["packages/storage/src/index.ts"],
+      "@cabot/storage/*": ["packages/storage/src/*"],
+      "@cabot/policy": ["packages/policy/src/index.ts"],
+      "@cabot/policy/*": ["packages/policy/src/*"],
+      "@cabot/runtime": ["packages/runtime/src/index.ts"],
+      "@cabot/tools": ["packages/tools/src/index.ts"],
+      "@cabot/compute": ["packages/compute/src/index.ts"],
+      "@cabot/providers": ["packages/providers/src/index.ts"]
+    }
+  }
+}

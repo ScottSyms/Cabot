@@ -1,0 +1,11 @@
+{
+  "name": "@cabot/policy",
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "@cabot/contracts": "0.1.0"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Cabot — Browser-Native Agent Runtime",
+  "version": "0.1.0",
+  "description": "Durable, capability-brokered autonomous agents in the browser sandbox.",
+  "minimum_chrome_version": "116",
+  "background": {
+    "service_worker": "dist/service-worker.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "dist/sidepanel.html"
+  },
+  "permissions": ["sidePanel", "alarms", "storage", "offscreen", "tabs", "scripting", "activeTab", "contextMenus"],
+  "host_permissions": [],
+  "offscreen_documents": [],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self';"
+  }
+}
