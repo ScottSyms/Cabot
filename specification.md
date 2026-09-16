@@ -1,7 +1,7 @@
 # Cabot — Browser-Native Autonomous Agent Runtime
 
 **Document:** Product and Technical Specification  
-**Status:** Draft 0.2  
+**Status:** Draft 0.3  
 **Date:** 2026-09-16  
 **Target:** Chromium / Microsoft Edge Manifest V3 extension  
 **Codename/Product name:** Cabot
@@ -71,13 +71,13 @@ Cabot SHALL:
 12. Allow multiple model providers and model-routing policies.
 13. Remain useful even when no native host companion application is installed.
 14. Provide a clean internal API so multiple user interfaces and agent clients can control the same runtime.
+15. Support multiple independent and cooperating agents as durable, separately permissioned actors within a project.
 
 ## 2.2 Secondary Goals
 
 Cabot SHOULD:
 
 - support local WebGPU inference where feasible;
-- support multiple cooperating agents;
 - allow tasks to delegate bounded subtasks;
 - provide a command palette in addition to chat;
 - support right-click and page-selection interactions;
@@ -1249,32 +1249,252 @@ Retrieved content SHALL retain source provenance.
 
 ---
 
-# 17. Multi-Agent and Delegation
+# 17. Multi-Agent Runtime and Delegation
 
-Cabot SHOULD support bounded delegation.
+Multi-agent operation is a first-class Cabot capability, not an optional orchestration layer.
+
+Cabot SHALL support multiple logical agents existing and progressing concurrently within the same browser runtime. Agents MAY be independent, cooperative, hierarchical, or task-specific. The runtime SHALL NOT require that one agent finish before another can exist or make progress.
+
+A Cabot agent is a durable actor with its own identity, task ownership, state, mailbox, skills, model configuration, budget, capability grants, and workspace view. An agent is not merely a chat session or a transient model invocation.
+
+## 17.1 Agent Identity and State
+
+Each agent SHALL have a stable `AgentId` and SHALL persist at minimum:
+
+- role and objective;
+- lifecycle state;
+- current task and plan position;
+- model/provider configuration;
+- assigned Skills;
+- capability grants;
+- budgets and limits;
+- mailbox cursor and pending messages;
+- workspace mounts and artifact references;
+- parent/child relationships where applicable;
+- checkpoint and recovery metadata.
+
+Agent state SHALL be persisted independently enough that failure, cancellation, or corruption of one agent does not require discarding unrelated agents.
+
+Suggested lifecycle states include:
+
+```text
+CREATED
+READY
+RUNNING
+WAITING_FOR_MODEL
+WAITING_FOR_TOOL
+WAITING_FOR_AGENT
+WAITING_FOR_USER
+PAUSED
+COMPLETED
+FAILED
+CANCELLED
+```
+
+## 17.2 Independent Agents
+
+Cabot SHALL permit multiple unrelated agents to operate at the same time. For example:
+
+```text
+Cabot Runtime
+  ├── Agent A — research Canadian-hosted models
+  ├── Agent B — analyze AIS data
+  ├── Agent C — monitor a permitted website
+  └── Agent D — prepare project documentation
+```
+
+Each independent agent SHALL retain separate task state, budgets, permissions, and working context even when the agents share a project.
+
+## 17.3 Cooperating Agents
+
+Cabot SHALL support cooperating agent topologies, including coordinator/worker arrangements.
 
 Example:
 
 ```text
-Primary Agent
-  ├── Research subtask
-  ├── Code-analysis subtask
-  └── Verification subtask
+Coordinator Agent
+  ├── Research Agent
+  ├── Analysis Agent
+  ├── Verification Agent
+  └── Writer Agent
 ```
 
-A delegated agent SHALL inherit only explicitly delegated:
+A coordinating agent MAY decompose a goal into independently durable child tasks, assign those tasks to existing agents, or request creation of bounded child agents.
+
+A child or delegated agent SHALL inherit only explicitly delegated:
 
 - objective;
 - context;
-- files;
+- files or workspace mounts;
+- Skills;
 - tools;
-- token/budget allowance;
+- model/provider selection;
+- token, compute, time, and tool budgets;
 - permissions;
 - deadlines.
 
-Subagents SHALL NOT automatically inherit all parent permissions.
+Subagents SHALL NOT automatically inherit all parent permissions, credentials, workspace visibility, model access, or budget. Delegation SHALL never increase authority unless the Capability Broker independently authorizes that increase.
 
-Delegated tasks SHALL be durable and independently checkpointable.
+## 17.4 Agent Creation and `agent.spawn`
+
+Cabot SHALL expose controlled agent-management capabilities to authorized agents and user interfaces. At minimum:
+
+```text
+agent.spawn
+agent.status
+agent.message
+agent.await
+agent.pause
+agent.resume
+agent.cancel
+```
+
+A representative spawn request is:
+
+```typescript
+agent.spawn({
+  role: "researcher",
+  goal: "Determine current WebMCP support",
+  skills: ["web-research", "technical-analysis"],
+  budget: {
+    maxModelCalls: 20,
+    maxRuntimeMinutes: 30
+  }
+})
+```
+
+`agent.spawn` SHALL itself be a brokered capability. Cabot SHALL enforce configurable limits on:
+
+- recursive delegation depth;
+- number of agents per task;
+- number of agents per project;
+- number of concurrently runnable agents;
+- model-call concurrency;
+- compute concurrency;
+- browser-interaction concurrency;
+- aggregate cost/token budgets.
+
+These limits SHALL prevent uncontrolled recursive spawning and browser resource exhaustion.
+
+## 17.5 Agent Communication
+
+Agents SHALL communicate through durable messages rather than direct mutation of another agent's internal state.
+
+A conceptual message envelope is:
+
+```typescript
+interface AgentMessage {
+  id: MessageId;
+  from: AgentId;
+  to: AgentId;
+  type: "request" | "result" | "event" | "artifact" | "cancel";
+  payload: unknown;
+  createdAt: string;
+}
+```
+
+Messages SHALL be persisted before delivery acknowledgment so that they can survive worker termination or browser restart. Delivery SHOULD be at-least-once with message IDs or equivalent deduplication semantics.
+
+Agents SHALL NOT rely on another agent's in-memory context as the only copy of information needed for task completion.
+
+## 17.6 Shared Artifacts and Project Exchange
+
+Large intermediate results SHALL be exchanged by reference rather than copied through model context or inter-agent messages.
+
+Example:
+
+```text
+Analysis Agent
+      │
+      ├── writes project://shared/results.parquet
+      │
+      └── sends artifact reference to Reviewer Agent
+```
+
+Cabot SHALL support project-level shared artifact spaces in addition to private agent/task workspaces. Access to shared artifacts SHALL remain capability-controlled.
+
+Agents SHOULD exchange:
+
+- artifact URIs;
+- structured summaries;
+- provenance;
+- schemas;
+- validation results;
+
+rather than embedding unnecessarily large payloads in agent messages.
+
+## 17.7 Scheduler and Concurrency
+
+Cabot SHALL distinguish logical agent concurrency from physical execution concurrency. Many agents MAY be defined or waiting while only a bounded number actively consume browser resources.
+
+The scheduler SHALL manage independently constrained execution classes such as:
+
+```text
+20 logical agents
+  ├── 6 runnable
+  ├── 3 active model turns
+  ├── 1 Pyodide execution
+  └── 2 concurrent browser actions
+```
+
+Waiting agents SHALL release unnecessary workers and SHALL be reconstructed from durable state when they become runnable.
+
+Scheduling policy MAY consider:
+
+- user priority;
+- dependency readiness;
+- fairness;
+- resource class;
+- model/provider limits;
+- project budgets;
+- deadlines;
+- user interaction latency.
+
+## 17.8 Multi-Agent Skills and Models
+
+Skills and model providers SHALL be assignable per agent. Different agents in the same project MAY use different:
+
+- Skills;
+- models;
+- model providers;
+- tool sets;
+- Python package allowances;
+- MCP servers;
+- WebMCP policies;
+- browser permissions;
+- cost and runtime budgets.
+
+This SHALL permit role specialization without granting every agent the union of all capabilities used by the project.
+
+## 17.9 Multi-Agent Recovery
+
+Delegated tasks and agent mailboxes SHALL be durable and independently checkpointable.
+
+After extension reload, browser restart, or worker termination, Cabot SHALL be able to reconstruct:
+
+1. all non-terminal agents;
+2. their lifecycle states;
+3. parent/child relationships;
+4. pending inter-agent messages;
+5. unresolved tool/model operations where recoverable;
+6. shared artifact references;
+7. outstanding approvals; and
+8. runnable dependencies.
+
+Recovery SHALL NOT assume that the same JavaScript worker, Pyodide worker, model session, or tab still exists.
+
+## 17.10 Multi-Agent Security Invariants
+
+Multiple agents SHALL NOT weaken Cabot's capability model. Specifically:
+
+- agents SHALL NOT directly grant capabilities to other agents;
+- child agents SHALL NOT automatically inherit parent authority;
+- an agent SHALL NOT directly mutate another agent's durable state;
+- shared storage SHALL be accessed through explicit workspace grants;
+- agent messages SHALL be treated as untrusted input by the receiving agent;
+- the Capability Broker SHALL remain authoritative for browser actions regardless of which agent requested them;
+- an agent SHALL NOT use delegation to bypass approval requirements, budgets, origin policies, or tool restrictions;
+- cancellation of a parent MAY cascade to descendants according to policy, but SHALL NOT affect unrelated agents.
 
 ---
 
@@ -1294,7 +1514,9 @@ It SHOULD include:
 - sources;
 - pause/resume/stop controls;
 - permission requests;
-- task switching.
+- task switching;
+- agent switching and agent hierarchy inspection;
+- per-agent state, skills, model, budget, and permission inspection.
 
 ## 18.2 Task Dashboard
 
@@ -1392,6 +1614,14 @@ interface CabotRuntime {
 
   inspectTask(taskId: TaskId): Promise<TaskState>;
   listTasks(filter?: TaskFilter): Promise<TaskSummary[]>;
+
+  spawnAgent(request: AgentSpawnRequest): Promise<AgentId>;
+  inspectAgent(agentId: AgentId): Promise<AgentState>;
+  listAgents(filter?: AgentFilter): Promise<AgentSummary[]>;
+  sendAgentMessage(agentId: AgentId, message: AgentMessageInput): Promise<void>;
+  pauseAgent(agentId: AgentId): Promise<void>;
+  resumeAgent(agentId: AgentId): Promise<void>;
+  cancelAgent(agentId: AgentId): Promise<void>;
 
   readArtifact(id: ArtifactId): Promise<Artifact>;
   subscribe(filter: EventFilter): AsyncIterable<CabotEvent>;
@@ -1788,14 +2018,25 @@ Exit criterion:
 
 ## Phase 7 — Multi-Agent and Local Models
 
-Deliver where useful:
+Deliver:
 
-- subagent delegation;
-- per-subagent capability restrictions;
+- multiple concurrent durable agents;
+- independent and cooperating agent topologies;
+- coordinator/worker delegation;
+- `agent.spawn`, `agent.message`, `agent.await`, and lifecycle controls;
+- durable per-agent mailboxes;
+- per-agent skills, models, budgets, workspaces, and capability restrictions;
+- scheduler-enforced concurrency limits;
+- resumable parent/child agent relationships;
+- shared artifacts passed by durable reference;
 - local embeddings;
 - WebGPU model providers;
 - model routing;
 - advanced memory and retrieval.
+
+Exit criterion:
+
+> Cabot can run at least two independently progressing agents plus a coordinator/worker delegation flow, interrupt the browser runtime, recover all non-terminal agents and pending messages from OPFS, and continue without broadening any agent's permissions.
 
 ---
 
@@ -1816,7 +2057,11 @@ The initial useful Cabot release SHALL demonstrate all of the following:
 11. Cabot can discover and invoke a WebMCP tool where browser support is available.
 12. A consequential browser action is blocked pending user approval.
 13. The user can inspect task state, actions, sources, artifacts, and permissions.
-14. No model or sandboxed program is given direct unrestricted extension API access.
+14. Cabot can run at least two logical agents concurrently with separate state, budgets, permissions, and workspaces.
+15. An authorized agent can delegate a bounded subtask through `agent.spawn`.
+16. Inter-agent messages and shared artifact references survive an intentional runtime interruption.
+17. A child agent cannot inherit or acquire a capability that was not explicitly delegated and authorized.
+18. No model or sandboxed program is given direct unrestricted extension API access.
 
 ---
 
@@ -1904,7 +2149,7 @@ Because MCP, WebMCP, browser APIs, and local browser AI capabilities are evolvin
 
 Cabot is a browser-native agent workbench with four defining characteristics:
 
-1. **Autonomous** — it can plan, use tools, write and execute code, delegate, and perform long multi-step tasks.
+1. **Autonomous and multi-agent** — it can plan, use tools, write and execute code, run multiple independent or cooperating agents, delegate bounded work, and perform long multi-step tasks.
 2. **Durable** — every significant operation is checkpointed so tasks can recover after browser execution contexts disappear.
 3. **Extensible** — Skills, Python, SQL, WASM, MCP, WebMCP, model providers, and browser tools all plug into a common tool/capability architecture.
 4. **Contained** — the browser sandbox and Capability Broker remain authoritative; neither the model nor executable Skill code receives ambient extension or host privileges.
