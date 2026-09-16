@@ -30,7 +30,7 @@ export function saveStore(db: SqliteDatabase, store: DurableStore): void {
   db.exec('BEGIN IMMEDIATE');
   try {
     db.exec(
-      'DELETE FROM projects; DELETE FROM tasks; DELETE FROM agents; DELETE FROM operations; DELETE FROM events; DELETE FROM checkpoints; DELETE FROM messages; DELETE FROM delivered; DELETE FROM artifacts; DELETE FROM grants; DELETE FROM approvals; DELETE FROM externals; DELETE FROM queue;',
+      'DELETE FROM projects; DELETE FROM tasks; DELETE FROM agents; DELETE FROM operations; DELETE FROM events; DELETE FROM checkpoints; DELETE FROM messages; DELETE FROM delivered; DELETE FROM artifacts; DELETE FROM sources; DELETE FROM grants; DELETE FROM approvals; DELETE FROM externals; DELETE FROM queue;',
     );
     const insProject = db.prepare('INSERT INTO projects (id, json) VALUES (?, ?)');
     for (const p of store.projects.values()) insProject.run(p.id, JSON.stringify(p));
@@ -54,6 +54,8 @@ export function saveStore(db: SqliteDatabase, store: DurableStore): void {
     }
     const insArt = db.prepare('INSERT INTO artifacts (id, task_id, json) VALUES (?, ?, ?)');
     for (const a of store.artifacts.values()) insArt.run(a.id, a.taskId, JSON.stringify(a));
+    const insSrc = db.prepare('INSERT INTO sources (id, task_id, json) VALUES (?, ?, ?)');
+    for (const s of store.sources.values()) insSrc.run(s.id, s.taskId, JSON.stringify(s));
     const insGrant = db.prepare('INSERT INTO grants (id, json) VALUES (?, ?)');
     for (const g of store.grants.values()) insGrant.run(g.id, JSON.stringify(g));
     const insAppr = db.prepare('INSERT INTO approvals (id, task_id, json) VALUES (?, ?, ?)');
@@ -121,6 +123,10 @@ export function loadStore(db: SqliteDatabase): DurableStore {
   for (const j of col('artifacts')) {
     const a = JSON.parse(j) as { id: string };
     store.artifacts.set(a.id, a as never);
+  }
+  for (const j of col('sources')) {
+    const s = JSON.parse(j) as { id: string };
+    store.sources.set(s.id, s as never);
   }
   for (const j of col('grants')) {
     const g = JSON.parse(j) as { id: string };

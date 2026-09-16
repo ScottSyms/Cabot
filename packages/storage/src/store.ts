@@ -18,6 +18,7 @@ import type {
   Project,
   ProjectId,
   QueueEntry,
+  Source,
   Task,
   TaskEvent,
   TaskId,
@@ -54,6 +55,7 @@ export class DurableStore {
   // per-recipient delivery cursor set (message ids delivered)
   delivered = new Map<AgentId, Set<string>>();
   artifacts = new Map<string, Artifact>();
+  sources = new Map<string, Source>();
   grants = new Map<string, CapabilityGrant>();
   approvals = new Map<string, Approval>();
   externalHandles = new Map<string, ExternalTaskHandle>();
@@ -86,6 +88,7 @@ export class DurableStore {
       messages: new Map(this.messages),
       delivered: new Map([...this.delivered].map(([k, v]) => [k, new Set(v)] as [string, Set<string>])),
       artifacts: new Map(this.artifacts),
+      sources: new Map(this.sources),
       grants: new Map(this.grants),
       approvals: new Map(this.approvals),
       externalHandles: new Map(this.externalHandles),
@@ -103,6 +106,7 @@ export class DurableStore {
     this.messages = s.messages;
     this.delivered = s.delivered;
     this.artifacts = s.artifacts;
+    this.sources = s.sources;
     this.grants = s.grants;
     this.approvals = s.approvals;
     this.externalHandles = s.externalHandles;
@@ -275,6 +279,17 @@ export class DurableStore {
   /** GC helper: unreferenced staged blobs after interruption. */
   listOrphanStaged(): Artifact[] {
     return [...this.artifacts.values()].filter((a) => a.staged);
+  }
+
+  /** Durably record a captured source with origin provenance. */
+  captureSource(s: Omit<Source, 'id' | 'capturedAt'>): Source {
+    return this.transaction(() => {
+      const full: Source = { ...s, id: newId('src'), capturedAt: nowIso() };
+      this.sources.set(full.id, full);
+      this.appendEvent(s.taskId, 'source.captured', `${s.uri} (${s.sha256.slice(0, 12)})`);
+      this.commitCheckpoint(s.taskId);
+      return full;
+    });
   }
 
   // ---- mailbox: at-least-once with dedup ----
