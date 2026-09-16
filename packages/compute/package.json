@@ -6,6 +6,8 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@cabot/contracts": "0.1.0"
+    "@cabot/contracts": "0.1.0",
+    "@cabot/storage": "0.1.0",
+    "@cabot/runtime": "0.1.0"
   }
 }
