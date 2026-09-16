@@ -88,8 +88,12 @@ export class CapabilityBroker {
     const isConsequential = tool.capabilityClass === CONSEQUENTIAL;
 
     if (isConsequential) {
-      // Consequential actions always require an explicit approval bound to the
-      // concrete action — even with a grant. Grants narrow scope; approvals authorize.
+      // Least privilege first: without a grant there is nothing to approve.
+      // With a grant, the grant narrows scope but the approval authorizes
+      // the concrete action.
+      if (!grant) {
+        return { allowed: false, reason: `no grant for ${req.toolId}` };
+      }
       const approvalId = newId('appr');
       const approval: Approval = {
         id: approvalId,
@@ -106,7 +110,6 @@ export class CapabilityBroker {
       };
       this.store.approvals.set(approvalId, approval);
       this.store.appendEvent(req.taskId, 'approval.requested', `${req.toolId} requires approval`);
-      void grant;
       return { allowed: false, approvalRequired: true, approvalId, reason: 'consequential action requires explicit approval' };
     }
 
@@ -140,6 +143,10 @@ export class CapabilityBroker {
       }
       if (a.dataHash !== req.dataHash || a.destination !== (req.destination ?? req.principal.origin) || a.documentId !== req.documentId) {
         return { allowed: false, reason: 'approval binding mismatch — target changed after approval' };
+      }
+      // Grant may have been revoked between approval and dispatch.
+      if (!this.findGrant(req)) {
+        return { allowed: false, reason: 'grant revoked after approval' };
       }
       return { allowed: true, reason: 'approval-bound dispatch authorized' };
     }

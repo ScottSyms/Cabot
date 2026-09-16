@@ -226,7 +226,8 @@ export class DurableStore {
     if (extra?.resultHash) op.resultHash = extra.resultHash;
     if (extra?.error) op.error = extra.error;
     op.updatedAt = nowIso();
-    this.appendEvent(op.taskId, status === 'SUCCEEDED' ? 'tool.completed' : 'tool.failed', `${op.toolId} ${status}`);
+    const detail = status === 'SUCCEEDED' ? 'tool.completed' : 'tool.failed';
+    this.appendEvent(op.taskId, detail, extra?.error ? `${op.toolId} ${status}: ${extra.error}` : `${op.toolId} ${status}`);
     this.commitCheckpoint(op.taskId);
     return op;
   }

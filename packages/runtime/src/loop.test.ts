@@ -100,6 +100,7 @@ describe('checkpointed agent loop', () => {
       id: 'external.publish', source: 'builtin', name: 'publish', description: 'publish',
       inputSchema: { type: 'object' }, capabilityClass: 'consequential', provenance: 'builtin',
     });
+    broker.grant({ principal: { kind: 'core-agent', agentId: agent.id }, toolId: 'external.publish', scope: 'task', taskId: task.id });
     const model = new FakeModelProvider();
     model.script(task.id, [
       { kind: 'tool', toolId: 'external.publish', args: { doc: 1 }, argsHash: 'h', idempotencyKey: 'p1' },

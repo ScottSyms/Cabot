@@ -52,6 +52,7 @@ describe('capability broker', () => {
 
   it('consequential action requires approval bound to concrete args; changed args invalid', () => {
     const { broker, task, agentA } = setup();
+    broker.grant({ principal: { kind: 'core-agent', agentId: agentA.id }, toolId: 'browser.submit', scope: 'task', taskId: task.id });
     const req = {
       toolId: 'browser.submit', args: { to: 'x' }, argsHash: 'h1',
       principal: { kind: 'core-agent' as const, agentId: agentA.id },
