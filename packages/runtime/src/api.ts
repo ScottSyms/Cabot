@@ -5,6 +5,14 @@ import type { ModelProvider } from '@cabot/providers';
 import { DurableStore } from '@cabot/storage';
 import { CapabilityBroker } from '@cabot/policy';
 import { runUntilSettled, type ToolExecutor } from './loop.js';
+import {
+  getDashboard,
+  getTaskDetail,
+  listPendingApprovals,
+  type ApprovalInboxItem,
+  type DashboardSummary,
+  type TaskDetail,
+} from './inspect.js';
 
 export class CabotRuntimeService {
   constructor(
@@ -88,6 +96,36 @@ export class CabotRuntimeService {
     const a = this.store.agents.get(agentId);
     if (!a) throw new Error(`unknown agent ${agentId}`);
     return { ...a, spent: { ...a.spent } };
+  }
+
+  // ---- inspection (read-only; feeds side panel + dashboard) ----
+
+  getTaskDetail(taskId: TaskId, eventLimit = 50): TaskDetail {
+    return getTaskDetail(this.store, taskId, eventLimit);
+  }
+
+  listPendingApprovals(): ApprovalInboxItem[] {
+    return listPendingApprovals(this.store);
+  }
+
+  getDashboard(): DashboardSummary {
+    return getDashboard(this.store);
+  }
+
+  /**
+   * Resolve an approval and move the parked task accordingly:
+   * granted → back to RUNNING so the loop can dispatch under the binding;
+   * denied → BLOCKED with the reason recorded, resumable by the user.
+   */
+  decideApproval(approvalId: string, decision: 'granted' | 'denied'): void {
+    const approval = this.broker.decideApproval(approvalId, decision);
+    const task = this.store.tasks.get(approval.taskId);
+    if (!task || task.status !== 'APPROVAL_REQUIRED') return;
+    if (decision === 'granted') {
+      this.store.transitionTask(task.id, 'RUNNING', `approval granted for ${approval.toolId}`);
+    } else {
+      this.store.transitionTask(task.id, 'BLOCKED', `approval denied for ${approval.toolId}`);
+    }
   }
 
   /** Run the checkpointed loop for a task (offscreen worker entry point). */

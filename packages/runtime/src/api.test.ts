@@ -1,0 +1,107 @@
+import { describe, expect, it } from 'vitest';
+import { DurableStore } from '@cabot/storage';
+import { CapabilityBroker } from '@cabot/policy';
+import { FakeModelProvider } from '@cabot/providers';
+import { CabotRuntimeService } from './api.js';
+import type { ToolExecutor } from './loop.js';
+
+function setup() {
+  const store = new DurableStore();
+  const broker = new CapabilityBroker(store);
+  broker.registerTool({
+    id: 'notes.write', source: 'builtin', name: 'write', description: 'w',
+    inputSchema: { type: 'object' }, capabilityClass: 'reversible', provenance: 'builtin',
+  });
+  broker.registerTool({
+    id: 'external.publish', source: 'builtin', name: 'publish', description: 'p',
+    inputSchema: { type: 'object' }, capabilityClass: 'consequential', provenance: 'builtin',
+  });
+  const project = store.createProject('P');
+  const agent = store.createAgent({
+    projectId: project.id, role: 'writer', objective: 'o', status: 'RUNNING',
+    modelConfig: { providerId: 'fake', modelId: 'fake-1' }, skillIds: [],
+    budget: { maxModelCalls: 30, maxToolCalls: 30 }, workspaceMounts: [], delegationDepth: 0,
+  });
+  const task = store.createTask({ projectId: project.id, ownerAgentId: agent.id, title: 'Publish report', objective: 'O' });
+  for (const toolId of ['notes.write', 'external.publish']) {
+    broker.grant({ principal: { kind: 'core-agent', agentId: agent.id }, toolId, scope: 'task', taskId: task.id });
+  }
+  const executed: string[] = [];
+  const executor: ToolExecutor = {
+    execute: async (toolId) => {
+      executed.push(toolId);
+      return { ok: true, resultHash: `r:${toolId}` };
+    },
+  };
+  const model = new FakeModelProvider();
+  const svc = new CabotRuntimeService(store, broker, model, executor);
+  return { store, broker, project, agent, task, model, svc, executed };
+}
+
+describe('approval inbox + inspection', () => {
+  it('parks consequential work and exposes it in the inbox and dashboard', async () => {
+    const { svc, agent, task, model } = setup();
+    model.script(task.id, [
+      { kind: 'tool', toolId: 'notes.write', args: {}, argsHash: 'h1', idempotencyKey: 'k1' },
+      { kind: 'tool', toolId: 'external.publish', args: { doc: 1 }, argsHash: 'h2', idempotencyKey: 'k2' },
+    ]);
+    const parked = await svc.runTask(task.id, agent.id, 5);
+    expect(parked.status).toBe('approval-required');
+
+    const inbox = svc.listPendingApprovals();
+    expect(inbox).toHaveLength(1);
+    expect(inbox[0]).toMatchObject({ toolId: 'external.publish', taskTitle: 'Publish report', agentRole: 'writer' });
+
+    const dashboard = svc.getDashboard();
+    expect(dashboard.pendingApprovals).toBe(1);
+    expect(dashboard.tasksByStatus.APPROVAL_REQUIRED).toBe(1);
+    expect(dashboard.blockedTasks.map((t) => t.id)).toContain(task.id);
+
+    const detail = svc.getTaskDetail(task.id);
+    expect(detail.operations.map((o) => o.toolId)).toContain('notes.write');
+    expect(detail.approvals.map((a) => a.toolId)).toContain('external.publish');
+    expect(detail.events.length).toBeGreaterThan(0);
+  });
+
+  it('denied approval blocks the task without dispatching; resume + done completes', async () => {
+    const { store, svc, agent, task, model, executed } = setup();
+    model.script(task.id, [
+      { kind: 'tool', toolId: 'external.publish', args: { doc: 1 }, argsHash: 'h2', idempotencyKey: 'k2' },
+    ]);
+    const parked = await svc.runTask(task.id, agent.id, 3);
+    expect(parked.status).toBe('approval-required');
+    if (parked.status !== 'approval-required') throw new Error('expected gate');
+
+    svc.decideApproval(parked.approvalId, 'denied');
+    expect(store.tasks.get(task.id)?.status).toBe('BLOCKED');
+    expect(executed).toEqual([]); // never dispatched
+    expect(svc.listPendingApprovals()).toHaveLength(0);
+
+    svc.resumeTask(task.id);
+    model.script(task.id, [{ kind: 'done', summary: 'stood down after denial' }]);
+    expect((await svc.runTask(task.id, agent.id)).status).toBe('complete');
+    expect(executed).toEqual([]);
+  });
+
+  it('granted approval resumes the loop and dispatches exactly once', async () => {
+    const { store, svc, agent, task, model, executed } = setup();
+    model.script(task.id, [
+      { kind: 'tool', toolId: 'external.publish', args: { doc: 1 }, argsHash: 'h2', idempotencyKey: 'k2' },
+    ]);
+    const parked = await svc.runTask(task.id, agent.id, 3);
+    expect(parked.status).toBe('approval-required');
+    if (parked.status !== 'approval-required') throw new Error('expected gate');
+
+    svc.decideApproval(parked.approvalId, 'granted');
+    expect(store.tasks.get(task.id)?.status).toBe('RUNNING');
+
+    // Same logical step retried: idempotent prepare finds the approval-bound
+    // path and the loop dispatches under the binding exactly once.
+    model.script(task.id, [
+      { kind: 'tool', toolId: 'external.publish', args: { doc: 1 }, argsHash: 'h2', idempotencyKey: 'k2' },
+      { kind: 'done', summary: 'published after approval' },
+    ]);
+    expect((await svc.runTask(task.id, agent.id)).status).toBe('complete');
+    expect(executed).toEqual(['external.publish']);
+  });
+});

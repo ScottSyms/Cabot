@@ -81,24 +81,40 @@ export async function runAgentTurn(
 
   // Tool path: brokered, idempotent, checkpointed at each stage.
   const principal = { kind: 'core-agent' as const, agentId };
-  const evaluation = broker.evaluate({
+  const toolRequest = {
     toolId: action.toolId,
     args: action.args,
     argsHash: action.argsHash,
     principal,
     taskId,
     agentId,
-  });
+  };
+  const evaluation = broker.evaluate(toolRequest);
+  // A previously granted approval bound to these exact arguments is consumed
+  // here, so an approved loop resumes without re-prompting. The binding is
+  // rechecked at dispatch; anything changed falls back to a fresh approval.
+  let approvalId: string | undefined;
   if (evaluation.approvalRequired) {
-    if (store.tasks.get(taskId)?.status === 'RUNNING') {
-      store.transitionTask(taskId, 'APPROVAL_REQUIRED', `${action.toolId} requires approval`);
+    const existing = [...store.approvals.values()].find(
+      (a) =>
+        a.taskId === taskId &&
+        a.agentId === agentId &&
+        a.toolId === action.toolId &&
+        a.argsHash === action.argsHash &&
+        a.decision === 'granted',
+    );
+    if (existing && broker.authorizeDispatch(toolRequest, existing.id).allowed) {
+      approvalId = existing.id;
     } else {
-      store.appendEvent(taskId, 'approval.requested', `${action.toolId} requires approval`);
-      store.commitCheckpoint(taskId);
+      if (store.tasks.get(taskId)?.status === 'RUNNING') {
+        store.transitionTask(taskId, 'APPROVAL_REQUIRED', `${action.toolId} requires approval`);
+      } else {
+        store.appendEvent(taskId, 'approval.requested', `${action.toolId} requires approval`);
+        store.commitCheckpoint(taskId);
+      }
+      return { status: 'approval-required', approvalId: evaluation.approvalId! };
     }
-    return { status: 'approval-required', approvalId: evaluation.approvalId! };
-  }
-  if (!evaluation.allowed) {
+  } else if (!evaluation.allowed) {
     store.appendEvent(taskId, 'tool.failed', `${action.toolId} denied: ${evaluation.reason}`);
     store.commitCheckpoint(taskId);
     return { status: 'continue' };
@@ -117,9 +133,7 @@ export async function runAgentTurn(
     store.commitCheckpoint(taskId);
     return { status: 'continue' };
   }
-  const dispatch = broker.authorizeDispatch(
-    { toolId: action.toolId, args: action.args, argsHash: action.argsHash, principal, taskId, agentId },
-  );
+  const dispatch = broker.authorizeDispatch(toolRequest, approvalId);
   if (!dispatch.allowed) {
     store.appendEvent(taskId, 'tool.failed', `${action.toolId} dispatch denied: ${dispatch.reason}`);
     store.commitCheckpoint(taskId);
