@@ -53,3 +53,91 @@ describe('snapshot persistence', () => {
     expect(await backend.load()).toBe('x');
   });
 });
+
+import { OpfsSnapshotBackend, ResilientSnapshotBackend, type OpfsDirHandle } from './browser-persist.js';
+
+class FakeFile {
+  text = '';
+  exists = false;
+  async getFile(): Promise<{ text(): Promise<string> }> {
+    if (!this.exists) {
+      const e = new Error('not found') as Error & { name: string };
+      e.name = 'NotFoundError';
+      throw e;
+    }
+    return { text: async () => this.text };
+  }
+  async createWritable(): Promise<{ write(d: string): Promise<void>; close(): Promise<void> }> {
+    return {
+      write: async (d: string) => {
+        this.text = d;
+      },
+      close: async () => {
+        this.exists = true;
+      },
+    };
+  }
+}
+
+class FakeDir implements OpfsDirHandle {
+  files = new Map<string, FakeFile>();
+  async getFileHandle(name: string, opts?: { create?: boolean }): Promise<FakeFile> {
+    let f = this.files.get(name);
+    if (!f) {
+      if (!opts?.create) {
+        const e = new Error('not found') as Error & { name: string };
+        e.name = 'NotFoundError';
+        throw e;
+      }
+      f = new FakeFile();
+      this.files.set(name, f);
+    }
+    return f;
+  }
+}
+
+function fakeRoot() {
+  const dirs = new Map<string, FakeDir>();
+  return {
+    dirs,
+    provider: async () => ({
+      getDirectoryHandle: async (name: string) => {
+        let d = dirs.get(name);
+        if (!d) {
+          d = new FakeDir();
+          dirs.set(name, d);
+        }
+        return d;
+      },
+    }),
+  };
+}
+
+describe('opfs + resilient snapshots', () => {
+  it('persists snapshots to an OPFS file and quarantines backups', async () => {
+    const root = fakeRoot();
+    const backend = new OpfsSnapshotBackend(root.provider, 'cabot', 'store.json');
+    expect(await backend.load()).toBeNull();
+    await backend.save('{"v":1}');
+    expect(await backend.load()).toBe('{"v":1}');
+    await backend.saveBackup('corrupt-x', 'junk');
+    expect(root.dirs.get('cabot')?.files.has('store.json.backup.corrupt-x')).toBe(true);
+  });
+
+  it('falls back permanently when the primary is unavailable', async () => {
+    const root = fakeRoot();
+    const fallback = new OpfsSnapshotBackend(root.provider);
+    const resilient = new ResilientSnapshotBackend(
+      { load: async () => { throw new Error('chrome.storage.local unavailable in this context'); }, save: async () => { throw new Error('nope'); }, saveBackup: async () => {} },
+      fallback,
+    );
+    await resilient.save('snap-1');
+    expect(resilient.activeName()).toBe('OpfsSnapshotBackend');
+    expect(resilient.switches.length).toBe(1);
+    expect(await resilient.load()).toBe('snap-1');
+    // Subsequent saves go straight to the fallback.
+    await resilient.save('snap-2');
+    expect(resilient.switches.length).toBe(1);
+    expect(await fallback.load()).toBe('snap-2');
+  });
+});

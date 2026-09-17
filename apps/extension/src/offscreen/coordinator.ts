@@ -11,7 +11,7 @@ import {
 import { CapabilityBroker } from '@cabot/policy';
 import { OpenAICompatibleProvider } from '@cabot/providers';
 import { CabotRuntimeService } from '@cabot/runtime';
-import { BrowserToolExecutor, ChromeBrowserBackend, registerBrowserTools } from '@cabot/tools';
+import { BrowserToolExecutor, registerBrowserTools, type BrowserBackend } from '@cabot/tools';
 
 export interface ProviderSettings {
   endpoint: string;
@@ -67,6 +67,55 @@ export type CoordinatorMessage =
 export interface CoordinatorDeps {
   snapshots: SnapshotBackend;
   settings: SettingsStore;
+  /** Browser backend: relay-to-supervisor in the extension, fake in tests. */
+  browserBackend: BrowserBackend;
+}
+
+/** File-backed settings (e.g. OPFS) with latch-to-fallback on failure. */
+export function withFallbackSettings(primary: SettingsStore, fallback: SettingsStore): SettingsStore {
+  let useFallback = false;
+  return {
+    async load(): Promise<ProviderSettings | null> {
+      if (!useFallback) {
+        try {
+          return await primary.load();
+        } catch {
+          useFallback = true;
+        }
+      }
+      return fallback.load();
+    },
+    async save(s: ProviderSettings): Promise<void> {
+      if (!useFallback) {
+        try {
+          await primary.save(s);
+          return;
+        } catch {
+          useFallback = true;
+        }
+      }
+      await fallback.save(s);
+    },
+  };
+}
+
+/** Settings persisted as JSON through any snapshot backend. */
+export function fileSettingsStore(snapshots: SnapshotBackend): SettingsStore {
+  return {
+    async load(): Promise<ProviderSettings | null> {
+      const raw = await snapshots.load();
+      if (!raw) return null;
+      try {
+        const v = JSON.parse(raw) as ProviderSettings;
+        return v && typeof v.endpoint === 'string' ? v : null;
+      } catch {
+        return null;
+      }
+    },
+    async save(s: ProviderSettings): Promise<void> {
+      await snapshots.save(JSON.stringify(s));
+    },
+  };
 }
 
 export function createCoordinator(deps: CoordinatorDeps) {
@@ -103,6 +152,10 @@ export function createCoordinator(deps: CoordinatorDeps) {
     broker = new CapabilityBroker(store);
     registerBrowserTools((t) => broker!.registerTool(t));
     await persist();
+    const switches = (deps.snapshots as unknown as { switches?: string[] }).switches;
+    if (switches && switches.length > 0 && !warning) {
+      warning = `snapshots: ${switches[switches.length - 1]}`;
+    }
   }
 
   function ready(): { store: DurableStore; broker: CapabilityBroker } {
@@ -152,7 +205,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
     const provider = new OpenAICompatibleProvider({ endpoint: settings.endpoint, apiKey: settings.apiKey, modelId: settings.modelId });
     const project = s.projects.get(task.projectId);
     if (!project) throw new Error('project missing for task');
-    const executor = new BrowserToolExecutor(new ChromeBrowserBackend(), s, task.id, project.id);
+    const executor = new BrowserToolExecutor(deps.browserBackend, s, task.id, project.id);
     const svc = new CabotRuntimeService(s, b, provider, executor);
     const outcome = await svc.runTask(task.id, task.ownerAgentId, 25, () => persist().catch(() => {}));
     await persist();
@@ -179,7 +232,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
     for (const toolId of ['browser.list_tabs', 'browser.get_active_tab', 'browser.read_page', 'browser.read_selection', 'browser.get_links']) {
       b.grant({ principal: { kind: 'core-agent', agentId: agent.id }, toolId, scope: 'task', taskId: task.id });
     }
-    const executor = new BrowserToolExecutor(new ChromeBrowserBackend(), s, task.id, project.id);
+    const executor = new BrowserToolExecutor(deps.browserBackend, s, task.id, project.id);
     const svc = new CabotRuntimeService(s, b, provider, executor);
     await persist();
     const outcome = await svc.runTask(task.id, agent.id, 25, () => persist().catch(() => {}));

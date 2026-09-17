@@ -1,5 +1,17 @@
-import { ChromeStorageBackend } from '@cabot/storage/browser-chrome';
-import { chromeSettingsStore, createCoordinator, type CoordinatorMessage } from './coordinator.js';
+import {
+  ChromeStorageBackend,
+  OpfsSnapshotBackend,
+  ResilientSnapshotBackend,
+  navigatorOpfsRoot,
+} from '@cabot/storage/browser-chrome';
+import { RelayBrowserBackend } from '@cabot/tools';
+import {
+  chromeSettingsStore,
+  createCoordinator,
+  fileSettingsStore,
+  withFallbackSettings,
+  type CoordinatorMessage,
+} from './coordinator.js';
 
 let booted = false;
 let bootStage = 'starting';
@@ -10,10 +22,23 @@ function report(): string {
 }
 
 async function main(): Promise<void> {
-  const coord = createCoordinator({
-    snapshots: new ChromeStorageBackend(),
-    settings: chromeSettingsStore(),
+  // Snapshots: chrome.storage where present, OPFS file otherwise. The
+  // fallback is permanent for the session and reported in boot warnings.
+  const snapshots = new ResilientSnapshotBackend(
+    new ChromeStorageBackend(),
+    new OpfsSnapshotBackend(navigatorOpfsRoot()),
+  );
+  const settings = withFallbackSettings(
+    chromeSettingsStore(),
+    fileSettingsStore(new OpfsSnapshotBackend(navigatorOpfsRoot(), 'cabot', 'settings.json')),
+  );
+  // Privileged tab calls execute in the service worker via relay.
+  const browserBackend = new RelayBrowserBackend(async (msg) => {
+    const g = globalThis as unknown as { chrome?: { runtime?: { sendMessage(m: unknown): Promise<unknown> } } };
+    if (!g.chrome?.runtime?.sendMessage) throw new Error('chrome.runtime messaging unavailable');
+    return g.chrome.runtime.sendMessage(msg);
   });
+  const coord = createCoordinator({ snapshots, settings, browserBackend });
   // Listener registers before boot finishes so senders get an explicit
   // diagnosis instead of an empty response. Only supervisor-forwarded
   // messages are executed: panel broadcasts reach every context, and without

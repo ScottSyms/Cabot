@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { MemorySnapshotBackend, serializeStore } from '@cabot/storage/browser-chrome';
 import { DurableStore } from '@cabot/storage/browser-chrome';
-import { createCoordinator, type SettingsStore } from './coordinator.js';
+import { FakeBrowserBackend } from '@cabot/tools';
+import { createCoordinator, fileSettingsStore, withFallbackSettings, type SettingsStore } from './coordinator.js';
 
 function settings(): SettingsStore {
   let current = { endpoint: 'http://localhost:11434/v1', modelId: 'test-model' };
@@ -16,7 +17,7 @@ function settings(): SettingsStore {
 describe('offscreen coordinator', () => {
   it('boots empty, persists across reboot, and rejects unconfigured runs', async () => {
     const snapshots = new MemorySnapshotBackend();
-    const coord = createCoordinator({ snapshots, settings: settings() });
+    const coord = createCoordinator({ snapshots, settings: settings(), browserBackend: new FakeBrowserBackend() });
     await coord.boot();
     expect(coord.ready().store.tasks.size).toBe(0);
 
@@ -31,7 +32,7 @@ describe('offscreen coordinator', () => {
   it('runSummary requires provider settings', async () => {
     const snapshots = new MemorySnapshotBackend();
     const empty: SettingsStore = { load: async () => null, save: async () => {} };
-    const coord = createCoordinator({ snapshots, settings: empty });
+    const coord = createCoordinator({ snapshots, settings: empty, browserBackend: new FakeBrowserBackend() });
     await coord.boot();
     await expect(coord.runSummary('summarize')).rejects.toThrow(/provider not configured/);
   });
@@ -47,7 +48,7 @@ describe('offscreen coordinator', () => {
     const snapshots = new MemorySnapshotBackend();
     await snapshots.save(serializeStore(s));
 
-    const coord = createCoordinator({ snapshots, settings: settings() });
+    const coord = createCoordinator({ snapshots, settings: settings(), browserBackend: new FakeBrowserBackend() });
     await coord.boot();
     expect(coord.ready().store.agents.get(agent.id)?.role).toBe('r');
 
@@ -66,12 +67,31 @@ describe('offscreen coordinator', () => {
   it('quarantines a corrupt snapshot and boots fresh instead of bricking', async () => {
     const snapshots = new MemorySnapshotBackend();
     await snapshots.save('definitely-not-json{{{');
-    const coord = createCoordinator({ snapshots, settings: settings() });
+    const coord = createCoordinator({ snapshots, settings: settings(), browserBackend: new FakeBrowserBackend() });
     await coord.boot(); // must not throw
     expect(coord.ready().store.tasks.size).toBe(0);
     expect(coord.bootWarning()).toMatch(/quarantined/);
     expect(snapshots.backups.size).toBe(1);
     const listed = (await coord.handleMessage({ type: 'cabot.list-tasks' })) as { tasks: unknown[] };
     expect(listed.tasks).toHaveLength(0);
+  });
+
+  it('falls back to file settings when the primary store is unavailable', async () => {
+    const snapshots = new MemorySnapshotBackend();
+    const failing: SettingsStore = {
+      load: async () => {
+        throw new Error('chrome.storage.local unavailable in this context');
+      },
+      save: async () => {
+        throw new Error('chrome.storage.local unavailable in this context');
+      },
+    };
+    const fileBacked = fileSettingsStore(snapshots);
+    const settings = withFallbackSettings(failing, fileBacked);
+    await settings.save({ endpoint: 'https://x/v1', modelId: 'm' });
+    expect(await settings.load()).toEqual({ endpoint: 'https://x/v1', modelId: 'm' });
+    // Primary tried first, then latched to fallback.
+    await settings.save({ endpoint: 'https://y/v1', modelId: 'm2' });
+    expect(await fileBacked.load()).toEqual({ endpoint: 'https://y/v1', modelId: 'm2' });
   });
 });

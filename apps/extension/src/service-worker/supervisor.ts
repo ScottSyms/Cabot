@@ -11,6 +11,7 @@ import {
   serializeStore,
   type SnapshotBackend,
 } from '@cabot/storage/browser-chrome';
+import { ChromeBrowserBackend, type BrowserBackend } from '@cabot/tools';
 
 const OFFSCREEN_URL = 'dist/offscreen.html';
 const REHYDRATE_ALARM = 'cabot-rehydrate';
@@ -19,6 +20,8 @@ export interface SupervisorDeps {
   snapshots: SnapshotBackend;
   ensureOffscreenDocument: () => Promise<void>;
   notifyClients: (msg: unknown) => void;
+  /** Privileged browser backend, exercised only in the worker context. */
+  browser: BrowserBackend;
 }
 
 async function persist(snapshots: SnapshotBackend, store: DurableStore): Promise<void> {
@@ -89,9 +92,23 @@ export function createSupervisor(deps: SupervisorDeps) {
         return { type: 'rehydrated' };
       case 'cabot.event':
         return { type: 'event-ignored' }; // UI broadcast; never forwarded
+      case 'cabot.browser-call':
+        return runBrowserCall((msg as { call?: string; args?: unknown[] }).call, (msg as { args?: unknown[] }).args ?? []);
       default:
         // All runtime operations live in the offscreen coordinator.
         return forwardToRuntime(msg);
+    }
+  }
+
+  /** Dispatch a privileged browser call in this (worker) context. */
+  async function runBrowserCall(call: string | undefined, args: unknown[]): Promise<unknown> {
+    const fn = (deps.browser as unknown as Record<string, unknown>)[call ?? ''];
+    if (typeof fn !== 'function') return { error: `unknown browser call ${call}` };
+    try {
+      const result = await (fn as (...a: unknown[]) => Promise<unknown>).apply(deps.browser, args);
+      return { ok: true, result };
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
     }
   }
 
@@ -101,8 +118,9 @@ export function createSupervisor(deps: SupervisorDeps) {
 // ---- wiring (executed only inside the extension worker context) ----
 export function wireExtensionRuntime(): void {
   if (typeof chrome === 'undefined') return;
-  const supervisor = createSupervisor({
-    snapshots: new ChromeStorageBackend(),
+    const supervisor = createSupervisor({
+      snapshots: new ChromeStorageBackend(),
+      browser: new ChromeBrowserBackend(),
       ensureOffscreenDocument: async () => {
         try {
           await chrome.offscreen.createDocument({

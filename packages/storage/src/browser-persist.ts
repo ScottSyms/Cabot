@@ -176,3 +176,142 @@ export class OpfsBlobStore {
     return names;
   }
 }
+
+// ---- OPFS file snapshot backend ----
+// Stores the snapshot as a single OPFS file. A torn write is possible on
+// crash mid-save; the coordinator's quarantine logic turns that into a
+// fresh boot with a backup instead of a bricked runtime.
+
+export interface OpfsFileHandle {
+  getFile(): Promise<{ text(): Promise<string> }>;
+  createWritable(): Promise<{ write(data: string): Promise<void>; close(): Promise<void> }>;
+}
+
+export interface OpfsDirHandle {
+  getFileHandle(name: string, opts?: { create?: boolean }): Promise<OpfsFileHandle>;
+}
+
+export interface OpfsRootHandle {
+  getDirectoryHandle(name: string, opts?: { create?: boolean }): Promise<OpfsDirHandle>;
+}
+
+export type OpfsRootProvider = () => Promise<OpfsRootHandle>;
+
+export function navigatorOpfsRoot(): OpfsRootProvider {
+  return async () => {
+    const nav = navigator as unknown as {
+      storage?: { getDirectory(): Promise<OpfsRootHandle> };
+    };
+    if (!nav.storage?.getDirectory) throw new Error('OPFS unavailable in this context');
+    return nav.storage.getDirectory();
+  };
+}
+
+export class OpfsSnapshotBackend implements SnapshotBackend {
+  constructor(
+    private getRoot: OpfsRootProvider,
+    private dirName = 'cabot',
+    private fileName = 'store.json',
+  ) {}
+
+  private async dir(): Promise<OpfsDirHandle> {
+    const root = await this.getRoot();
+    return root.getDirectoryHandle(this.dirName, { create: true });
+  }
+
+  async load(): Promise<string | null> {
+    try {
+      const handle = await (await this.dir()).getFileHandle(this.fileName);
+      return await (await handle.getFile()).text();
+    } catch (e) {
+      if ((e as { name?: string }).name === 'NotFoundError') return null;
+      throw e;
+    }
+  }
+
+  async save(snapshot: string): Promise<void> {
+    const handle = await (await this.dir()).getFileHandle(this.fileName, { create: true });
+    const writable = await handle.createWritable();
+    try {
+      await writable.write(snapshot);
+    } finally {
+      await writable.close();
+    }
+  }
+
+  async saveBackup(name: string, snapshot: string): Promise<void> {
+    const handle = await (await this.dir()).getFileHandle(`${this.fileName}.backup.${name}`, { create: true });
+    const writable = await handle.createWritable();
+    try {
+      await writable.write(snapshot);
+    } finally {
+      await writable.close();
+    }
+  }
+}
+
+// ---- Resilient backend: primary with permanent fallback ----
+// First primary failure (e.g. chrome.storage.local missing from offscreen)
+// switches all future traffic to the fallback and records the switch for
+// UI visibility. Reads try the active backend, then the other one.
+
+export class ResilientSnapshotBackend implements SnapshotBackend {
+  private active: SnapshotBackend;
+  switches: string[] = [];
+
+  constructor(
+    private primary: SnapshotBackend,
+    private fallback: SnapshotBackend,
+  ) {
+    this.active = primary;
+  }
+
+  activeName(): string {
+    return this.active.constructor.name;
+  }
+
+  private note(from: SnapshotBackend, to: SnapshotBackend, e: unknown): void {
+    const msg = `${this.describe(from)} failed (${e instanceof Error ? e.message : String(e)}); using ${this.describe(to)}`;
+    this.switches.push(msg);
+  }
+
+  private describe(b: SnapshotBackend): string {
+    return (b as { constructor: { name: string } }).constructor.name;
+  }
+
+  async load(): Promise<string | null> {
+    try {
+      return await this.active.load();
+    } catch (e) {
+      const other = this.active === this.primary ? this.fallback : this.primary;
+      try {
+        const v = await other.load();
+        this.note(this.active, other, e);
+        this.active = other;
+        return v;
+      } catch {
+        throw e;
+      }
+    }
+  }
+
+  async save(snapshot: string): Promise<void> {
+    try {
+      await this.active.save(snapshot);
+    } catch (e) {
+      const other = this.active === this.primary ? this.fallback : this.primary;
+      this.note(this.active, other, e);
+      this.active = other;
+      await other.save(snapshot);
+    }
+  }
+
+  async saveBackup(name: string, snapshot: string): Promise<void> {
+    try {
+      const target = this.active as SnapshotBackend & { saveBackup?: (n: string, s: string) => Promise<void> };
+      if (target.saveBackup) await target.saveBackup(name, snapshot);
+    } catch {
+      // Quarantine is best-effort; booting matters more.
+    }
+  }
+}

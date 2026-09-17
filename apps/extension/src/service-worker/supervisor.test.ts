@@ -3,6 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DurableStore, MemorySnapshotBackend, loadStore, openDatabase, saveStore, serializeStore } from '@cabot/storage';
+import { FakeBrowserBackend } from '@cabot/tools';
 import { createSupervisor } from './supervisor.js';
 
 describe('supervisor', () => {
@@ -37,6 +38,7 @@ describe('supervisor', () => {
         offscreenEnsured += 1;
       },
       notifyClients: (m) => notified.push(m),
+      browser: new FakeBrowserBackend(),
     });
 
     // Sanity: seeded snapshot round-trips through the file-backed SQLite path too.
@@ -73,10 +75,30 @@ describe('supervisor', () => {
         snapshots,
         ensureOffscreenDocument: async () => {},
         notifyClients: () => {},
+        browser: new FakeBrowserBackend(),
       });
       await expect(sup.onMessage({ type: 'cabot.list-tasks' })).rejects.toThrow(/empty response/);
     } finally {
       delete g.chrome;
     }
+  });
+});
+
+describe('browser-call relay', () => {
+  it('dispatches privileged calls in the worker and reports errors', async () => {
+    const snapshots = new MemorySnapshotBackend();
+    const browser = new FakeBrowserBackend();
+    browser.addTab(
+      { id: 't9', url: 'https://example.com/', title: 'T', origin: 'https://example.com' },
+      { url: 'https://example.com/', origin: 'https://example.com', title: 'T', text: 'x', links: [], truncated: false },
+    );
+    const sup = createSupervisor({ snapshots, ensureOffscreenDocument: async () => {}, notifyClients: () => {}, browser });
+    expect(await sup.onMessage({ type: 'cabot.browser-call', call: 'listTabs', args: [] })).toEqual({
+      ok: true,
+      result: [{ id: 't9', url: 'https://example.com/', title: 'T', origin: 'https://example.com' }],
+    });
+    expect(await sup.onMessage({ type: 'cabot.browser-call', call: 'nope', args: [] })).toEqual({
+      error: 'unknown browser call nope',
+    });
   });
 });
