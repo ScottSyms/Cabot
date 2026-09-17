@@ -49,6 +49,11 @@ async function main(): Promise<void> {
     await coord.boot();
     bootStage = 'ready';
     booted = true;
+    // Recovery: pick up work lost to an extension reload or offscreen kill.
+    // Fire-and-forget; failures are recorded as task events.
+    void coord.resumeInterrupted().catch((e: unknown) => {
+      console.error('[cabot] auto-resume failed:', e);
+    });
   } catch (e) {
     bootStage = 'failed';
     bootError = e instanceof Error ? e.message : String(e);

@@ -210,3 +210,50 @@ describe('cancel routing', () => {
     expect(coord.ready().store.agents.has(agent.id)).toBe(false);
   });
 });
+
+describe('auto-resume on boot', () => {
+  it('returns interrupted tasks to READY without a model when provider is unset', async () => {
+    const snapshots = new MemorySnapshotBackend();
+    const noProvider: SettingsStore = { load: async () => null, save: async () => {} };
+    const coord = createCoordinator({ snapshots, settings: noProvider, browserBackend: new FakeBrowserBackend() });
+    await coord.boot();
+    const s = coord.ready().store;
+    const project = s.createProject('P');
+    const agent = s.createAgent({
+      projectId: project.id, role: 'r', objective: 'o', status: 'RUNNING',
+      modelConfig: { providerId: 'x', modelId: 'y' }, skillIds: [], budget: {}, workspaceMounts: [], delegationDepth: 0,
+    });
+    const task = s.createTask({ projectId: project.id, ownerAgentId: agent.id, title: 'T', objective: 'O' });
+    s.transitionTask(task.id, 'READY', 'r');
+    s.transitionTask(task.id, 'RUNNING', 'r');
+    s.reconcileAfterRestart();
+    await coord.persist();
+    expect(s.tasks.get(task.id)?.status).toBe('INTERRUPTED');
+
+    const resumed = await coord.resumeInterrupted();
+    expect(resumed).toContain(task.id);
+    expect(coord.ready().store.tasks.get(task.id)?.status).toBe('READY');
+  });
+
+  it('blocks interrupted tasks that have an uncertain operation', async () => {
+    const snapshots = new MemorySnapshotBackend();
+    const coord = createCoordinator({ snapshots, settings: settings(), browserBackend: new FakeBrowserBackend() });
+    await coord.boot();
+    const s = coord.ready().store;
+    const project = s.createProject('P');
+    const agent = s.createAgent({
+      projectId: project.id, role: 'r', objective: 'o', status: 'RUNNING',
+      modelConfig: { providerId: 'x', modelId: 'y' }, skillIds: [], budget: {}, workspaceMounts: [], delegationDepth: 0,
+    });
+    const task = s.createTask({ projectId: project.id, ownerAgentId: agent.id, title: 'T', objective: 'O' });
+    s.transitionTask(task.id, 'READY', 'r');
+    s.transitionTask(task.id, 'RUNNING', 'r');
+    const op = s.prepareOperation({ taskId: task.id, agentId: agent.id, toolId: 'browser.read_page', argsHash: 'h', idempotencyKey: 'k' });
+    s.markDispatched(op.id);
+    s.reconcileAfterRestart();
+
+    const resumed = await coord.resumeInterrupted();
+    expect(resumed).not.toContain(task.id);
+    expect(coord.ready().store.tasks.get(task.id)?.status).toBe('BLOCKED');
+  });
+});

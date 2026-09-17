@@ -4,7 +4,7 @@
 // Every turn commits to the store; a crash between turns resumes from the
 // last checkpoint with no duplicated external effects.
 import type { AgentId, AgentStatus, TaskId, TaskStatus } from '@cabot/contracts';
-import type { ModelProvider } from '@cabot/providers';
+import type { ModelProvider, ModelResponse } from '@cabot/providers';
 import { DurableStore } from '@cabot/storage/browser-chrome';
 import { CapabilityBroker } from '@cabot/policy';
 
@@ -110,16 +110,33 @@ export async function runAgentTurn(
     .map((m) => ({ role: m.role as 'user' | 'agent', text: m.text }));
   store.appendEvent(taskId, 'model.requested', `agent ${agentId} requests decision`);
   store.setAgentStatus(agentId, 'WAITING_FOR_MODEL');
-  const response = await model.decide({
-    taskId,
-    agentId,
-    systemPolicy: 'least-privilege; consequential actions need approval',
-    objective: task.objective,
-    planRevision: task.planRevision,
-    tools: [...broker.tools.values()].map((t) => ({ id: t.id, description: t.description })),
-    recentEvents: recentEvents.map((e) => ({ type: e.type, summary: e.summary })),
-    recentConversation,
-  });
+  let response: ModelResponse;
+  try {
+    response = await model.decide({
+      taskId,
+      agentId,
+      systemPolicy: 'least-privilege; consequential actions need approval',
+      objective: task.objective,
+      planRevision: task.planRevision,
+      tools: [...broker.tools.values()].map((t) => ({ id: t.id, description: t.description })),
+      recentEvents: recentEvents.map((e) => ({ type: e.type, summary: e.summary })),
+      recentConversation,
+    });
+  } catch (e) {
+    // A model/network failure must be visible and recoverable: record it in
+    // both the activity log and the conversation, then suspend (not fail) so
+    // the user can resume by sending a message.
+    const reason = e instanceof Error ? e.message : String(e);
+    store.appendEvent(taskId, 'model.failed', reason);
+    store.appendConversation(taskId, agentId, 'agent', `Model call failed: ${reason}`);
+    try {
+      store.transitionTask(taskId, 'SUSPENDED', 'model call failed');
+    } catch {
+      store.commitCheckpoint(taskId);
+    }
+    syncAgentToTask(store, taskId, agentId);
+    return { status: 'suspended', reason: `model call failed: ${reason}` };
+  }
   store.appendEvent(taskId, 'model.responded', `action: ${response.action.kind}`);
   const say = response.text?.trim() || undefined;
   if (say && response.action.kind !== 'done') {

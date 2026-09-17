@@ -11,6 +11,7 @@ import {
 import { CapabilityBroker } from '@cabot/policy';
 import { OpenAICompatibleProvider } from '@cabot/providers';
 import { CabotRuntimeService } from '@cabot/runtime';
+import type { TaskId } from '@cabot/contracts';
 import { BrowserToolExecutor, registerBrowserTools, type BrowserBackend } from '@cabot/tools';
 
 export interface ProviderSettings {
@@ -225,6 +226,29 @@ export function createCoordinator(deps: CoordinatorDeps) {
     }
   }
 
+  /**
+   * Recover work lost to a runtime termination (extension reload, offscreen
+   * kill, browser restart). Interrupted tasks with no uncertain operation
+   * resume automatically; ones with an uncertain external effect are parked
+   * BLOCKED for review. Never runs without a configured provider.
+   */
+  async function resumeInterrupted(): Promise<TaskId[]> {
+    const resumed = queryService().resumeInterruptedTasks();
+    if (resumed.length === 0) return [];
+    await persist();
+    emit('auto-resumed', undefined, { taskIds: resumed });
+    const settings = await deps.settings.load().catch(() => null);
+    if (!settings) return resumed; // parked READY; runs once configured
+    for (const taskId of resumed) {
+      void continueTask(taskId).catch(async (e: unknown) => {
+        const { store: s } = ready();
+        s.appendEvent(taskId, 'task.blocked', `auto-resume failed: ${e instanceof Error ? e.message : String(e)}`);
+        await persist().catch(() => {});
+      });
+    }
+    return resumed;
+  }
+
   async function continueTask(taskId: string): Promise<unknown> {
     const { store: s, broker: b } = ready();
     const task = s.tasks.get(taskId);
@@ -371,5 +395,5 @@ export function createCoordinator(deps: CoordinatorDeps) {
     }
   }
 
-  return { boot, reboot, persist, runSummary, handleMessage, ready, bootWarning: () => warning };
+  return { boot, reboot, persist, runSummary, handleMessage, ready, resumeInterrupted, bootWarning: () => warning };
 }

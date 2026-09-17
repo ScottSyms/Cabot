@@ -249,3 +249,30 @@ describe('cancel with no loop in flight', () => {
     expect(store.tasks.get(task.id)?.status).toBe('CANCELLED');
   });
 });
+
+describe('model failure handling', () => {
+  it('records the failure and suspends rather than stalling', async () => {
+    const { store, broker, agent, task } = setup();
+    const failing = {
+      id: 'boom',
+      listModels: async () => [],
+      decide: async () => {
+        throw new Error('model endpoint unreachable (https://x): Failed to fetch');
+      },
+    };
+    const svc = new CabotRuntimeService(store, broker, failing, { execute: async () => ({ ok: true }) });
+    const outcome = await svc.runTask(task.id, agent.id);
+    expect(outcome.status).toBe('suspended');
+    expect(store.tasks.get(task.id)?.status).toBe('SUSPENDED');
+    expect(store.agents.get(agent.id)?.status).toBe('PAUSED');
+    const failed = store.events.filter((e) => e.taskId === task.id && e.type === 'model.failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0].summary).toMatch(/unreachable/);
+    // Visible in the transcript too, not just the activity log.
+    const conv = store.forTaskConversation(task.id);
+    expect(conv.some((m) => m.text.includes('Model call failed'))).toBe(true);
+    // Resumable: a message wakes it and a working model completes it.
+    svc.sendUserMessage(task.id, 'try again');
+    expect(store.tasks.get(task.id)?.status).toBe('READY');
+  });
+});

@@ -164,3 +164,28 @@ describe('conversation transcript', () => {
     expect(svc.getTaskDetail(task.id).conversation).toHaveLength(4);
   });
 });
+
+describe('interrupted-task recovery', () => {
+  it('resumes tasks with no uncertain op and blocks ones with an uncertain op', () => {
+    const { store, svc, agent } = setup();
+    const project = setup_projectId(store);
+    const clean = store.createTask({ projectId: project, ownerAgentId: agent.id, title: 'Clean', objective: 'O' });
+    const dirty = store.createTask({ projectId: project, ownerAgentId: agent.id, title: 'Dirty', objective: 'O' });
+    store.transitionTask(clean.id, 'READY', 'r');
+    store.transitionTask(clean.id, 'RUNNING', 'r');
+    store.transitionTask(dirty.id, 'READY', 'r');
+    store.transitionTask(dirty.id, 'RUNNING', 'r');
+    const op = store.prepareOperation({ taskId: dirty.id, agentId: agent.id, toolId: 'notes.write', argsHash: 'h', idempotencyKey: 'k' });
+    store.markDispatched(op.id);
+    store.reconcileAfterRestart();
+    expect(store.tasks.get(clean.id)?.status).toBe('INTERRUPTED');
+    expect(store.tasks.get(dirty.id)?.status).toBe('INTERRUPTED');
+
+    const resumed = svc.resumeInterruptedTasks();
+    expect(resumed).toContain(clean.id);
+    expect(resumed).not.toContain(dirty.id);
+    expect(store.tasks.get(clean.id)?.status).toBe('READY');
+    expect(store.tasks.get(dirty.id)?.status).toBe('BLOCKED');
+    expect(store.events.some((e) => e.taskId === dirty.id && e.summary.includes('result unknown'))).toBe(true);
+  });
+});

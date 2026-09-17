@@ -192,6 +192,39 @@ export class CabotRuntimeService {
     }
   }
 
+  /**
+   * Recover interrupted tasks after a runtime restart (spec §6.4). Tasks with
+   * an UNCERTAIN operation are parked BLOCKED for explicit review; all others
+   * return to READY so they can resume automatically. Returns resumable ids.
+   */
+  resumeInterruptedTasks(): TaskId[] {
+    const resumed: TaskId[] = [];
+    for (const task of this.store.tasks.values()) {
+      if (task.status !== 'INTERRUPTED') continue;
+      const uncertain = [...this.store.operations.values()].filter(
+        (o) => o.taskId === task.id && o.status === 'UNCERTAIN',
+      );
+      if (uncertain.length > 0) {
+        this.store.appendEvent(
+          task.id,
+          'task.blocked',
+          `interrupted during ${uncertain[0].toolId}; result unknown — review before resuming`,
+        );
+        try {
+          this.store.transitionTask(task.id, 'BLOCKED', 'interrupted with uncertain operation');
+        } catch {
+          this.store.commitCheckpoint(task.id);
+        }
+        syncAgentToTask(this.store, task.id, task.ownerAgentId);
+        continue;
+      }
+      this.store.transitionTask(task.id, 'READY', 'auto-resumed after interruption');
+      syncAgentToTask(this.store, task.id, task.ownerAgentId);
+      resumed.push(task.id);
+    }
+    return resumed;
+  }
+
   /** Run the checkpointed loop for a task (offscreen worker entry point). */
   async runTask(taskId: TaskId, agentId: AgentId, maxTurns = 25, onTurn?: () => void | Promise<void>) {
     const executor = this.executor ?? { execute: async () => ({ ok: true }) };
