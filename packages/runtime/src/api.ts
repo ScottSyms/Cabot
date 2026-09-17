@@ -73,13 +73,16 @@ export class CabotRuntimeService {
   cancelTask(taskId: TaskId): void {
     const t = this.store.tasks.get(taskId);
     if (!t) throw new Error(`unknown task ${taskId}`);
-    if (t.status === 'CREATED' || t.status === 'READY' || t.status === 'SUSPENDED') {
+    if (['COMPLETE', 'FAILED', 'CANCELLED'].includes(t.status)) return;
+    // Parked tasks have no running loop to observe a request: cancel directly.
+    if (['CREATED', 'READY', 'SUSPENDED', 'APPROVAL_REQUIRED', 'BLOCKED', 'INTERRUPTED'].includes(t.status)) {
       this.store.transitionTask(taskId, 'CANCELLED', 'cancelled by user');
-    } else if (!['COMPLETE', 'FAILED', 'CANCELLED'].includes(t.status)) {
-      // Best-effort cancel from active states: mark then cancel.
-      this.store.appendEvent(taskId, 'task.cancel-requested', 'cancel requested by user');
-      this.store.commitCheckpoint(taskId);
+      return;
     }
+    // Active task: request cancellation; the loop honours it at the next
+    // turn boundary and never mid-dispatch.
+    this.store.appendEvent(taskId, 'task.cancel-requested', 'cancel requested by user');
+    this.store.commitCheckpoint(taskId);
   }
 
   inspectTask(taskId: TaskId): Task {

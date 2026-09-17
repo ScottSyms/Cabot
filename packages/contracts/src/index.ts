@@ -346,7 +346,7 @@ export const TASK_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
   COMPLETE: [],
   FAILED: ['READY'],
   CANCELLED: [],
-  INTERRUPTED: ['READY', 'BLOCKED'],
+  INTERRUPTED: ['READY', 'BLOCKED', 'CANCELLED'],
   SUSPENDED: ['READY', 'CANCELLED'],
   BLOCKED: ['READY', 'CANCELLED'],
 };

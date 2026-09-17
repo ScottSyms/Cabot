@@ -94,8 +94,7 @@ describe('checkpointed agent loop', () => {
     expect(store.tasks.get(task.id)?.status).toBe('COMPLETE');
   });
 
-  it('consequential tools park the task in APPROVAL_REQUIRED', async () => {
-    const { store, broker, agent, task } = setup();
+  it('consequential tools park the task in APPROVAL_REQUIRED', async () => {    const { store, broker, agent, task } = setup();
     broker.registerTool({
       id: 'external.publish', source: 'builtin', name: 'publish', description: 'publish',
       inputSchema: { type: 'object' }, capabilityClass: 'consequential', provenance: 'builtin',
@@ -110,5 +109,64 @@ describe('checkpointed agent loop', () => {
     const outcome = await svc.runTask(task.id, agent.id, 3);
     expect(outcome.status).toBe('approval-required');
     expect(store.tasks.get(task.id)?.status).toBe('APPROVAL_REQUIRED');
+  });
+});
+
+describe('cancellation and pause', () => {
+  function runningSetup() {
+    const s = setup();
+    const model = new FakeModelProvider();
+    let executions = 0;
+    const executor: ToolExecutor = {
+      execute: async (): Promise<ToolExecution> => {
+        executions += 1;
+        return { ok: true, resultHash: 'r' };
+      },
+    };
+    const svc = new CabotRuntimeService(s.store, s.broker, model, executor);
+    return { ...s, model, executor, svc, ran: () => executions };
+  }
+
+  it('cancel during an active run stops the loop at the next turn', async () => {
+    const { store, broker, agent, task, model, executor, svc, ran } = runningSetup();
+    model.script(task.id, [
+      { kind: 'tool', toolId: 'notes.write', args: { n: 1 }, argsHash: 'h1', idempotencyKey: 'k1' },
+      { kind: 'tool', toolId: 'notes.write', args: { n: 2 }, argsHash: 'h2', idempotencyKey: 'k2' },
+      { kind: 'done', summary: 'never reached' },
+    ]);
+    expect((await runAgentTurn(store, broker, model, executor, task.id, agent.id)).status).toBe('continue');
+    expect(ran()).toBe(1);
+    svc.cancelTask(task.id);
+    expect((await runAgentTurn(store, broker, model, executor, task.id, agent.id)).status).toBe('cancelled');
+    expect(store.tasks.get(task.id)?.status).toBe('CANCELLED');
+    expect(ran()).toBe(1); // second dispatch never happened
+    expect((await svc.runTask(task.id, agent.id)).status).toBe('suspended');
+  });
+
+  it('cancels directly from parked states', async () => {
+    const { store, svc, task } = runningSetup();
+    for (const status of ['APPROVAL_REQUIRED', 'BLOCKED', 'INTERRUPTED'] as const) {
+      const t = store.tasks.get(task.id)!;
+      t.status = status;
+      svc.cancelTask(task.id);
+      expect(store.tasks.get(task.id)?.status).toBe('CANCELLED');
+      // reset for next iteration (test-only direct mutation)
+      t.status = status;
+    }
+    void store;
+  });
+
+  it('pause during an active run stops the loop at the boundary', async () => {
+    const { store, broker, agent, task, model, executor, svc, ran } = runningSetup();
+    model.script(task.id, [
+      { kind: 'tool', toolId: 'notes.write', args: { n: 1 }, argsHash: 'h1', idempotencyKey: 'k1' },
+      { kind: 'tool', toolId: 'notes.write', args: { n: 2 }, argsHash: 'h2', idempotencyKey: 'k2' },
+    ]);
+    expect((await runAgentTurn(store, broker, model, executor, task.id, agent.id)).status).toBe('continue');
+    svc.pauseTask(task.id);
+    expect(store.tasks.get(task.id)?.status).toBe('SUSPENDED');
+    const outcome = await runAgentTurn(store, broker, model, executor, task.id, agent.id);
+    expect(outcome.status).toBe('suspended');
+    expect(ran()).toBe(1);
   });
 });

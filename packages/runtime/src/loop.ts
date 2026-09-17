@@ -24,6 +24,7 @@ export type TurnOutcome =
   | { status: 'complete'; summary: string }
   | { status: 'approval-required'; approvalId: string }
   | { status: 'waiting-user'; reason: string }
+  | { status: 'cancelled' }
   | { status: 'suspended'; reason: string };
 
 export async function runAgentTurn(
@@ -39,6 +40,22 @@ export async function runAgentTurn(
   if (!task) throw new Error(`unknown task ${taskId}`);
   if (!agent) throw new Error(`unknown agent ${agentId}`);
   if (['COMPLETE', 'FAILED', 'CANCELLED'].includes(task.status)) return { status: 'suspended', reason: `task ${task.status}` };
+  // Cooperative cancellation: a cancel requested while the loop was running
+  // takes effect at the next turn boundary — never mid-dispatch.
+  if (store.events.some((e) => e.taskId === taskId && e.type === 'task.cancel-requested')) {
+    if (task.status !== 'CANCELLED') {
+      try {
+        store.transitionTask(taskId, 'CANCELLED', 'cancelled by user');
+      } catch {
+        store.appendEvent(taskId, 'task.cancel-requested', 'cancel acknowledged; already terminal');
+      }
+    }
+    return { status: 'cancelled' };
+  }
+  // A pause (or block) applied while running stops the loop at the boundary.
+  if (task.status === 'SUSPENDED' || task.status === 'BLOCKED') {
+    return { status: 'suspended', reason: `task ${task.status}` };
+  }
   if (task.status === 'APPROVAL_REQUIRED') return { status: 'suspended', reason: 'awaiting approval' };
 
   // Budget first: bounded turns even under adversarial scripts.
