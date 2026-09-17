@@ -37,6 +37,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
   }
 
   async decide(request: ModelRequest): Promise<ModelResponse> {
+    const base = this.config.endpoint.replace(/\/+$/, '').replace(/\/chat\/completions$/, '');
     const body = {
       model: this.config.modelId,
       messages: [
@@ -53,7 +54,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     const timer = setTimeout(() => ctrl.abort(), this.config.timeoutMs ?? 60_000);
     let res: Response;
     try {
-      res = await fetch(`${this.config.endpoint.replace(/\/$/, '')}/chat/completions`, {
+      res = await fetch(`${base}/chat/completions`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',

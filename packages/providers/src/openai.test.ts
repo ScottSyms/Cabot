@@ -45,8 +45,7 @@ describe('openai-compatible provider', () => {
       expect(res.action.argsHash).toMatch(/^[0-9a-f]{16}$/);
     }
     // Request shape: tools advertised, endpoint path correct.
-    expect(calls[0].url).toBe('http://localhost:11434/v1/chat/completions');
-    const sent = JSON.parse(calls[0].init.body as string) as { tools: { function: { name: string } }[]; model: string };
+    expect(calls[0].url).toBe('http://localhost:11434/v1/chat/completions');    const sent = JSON.parse(calls[0].init.body as string) as { tools: { function: { name: string } }[]; model: string };
     expect(sent.model).toBe('m');
     expect(sent.tools.map((t) => t.function.name)).toEqual(['browser.read_page']);
   });
@@ -71,6 +70,17 @@ describe('openai-compatible provider', () => {
     stubFetch({ error: 'nope' }, 500);
     const provider = new OpenAICompatibleProvider({ endpoint: 'https://api.example.com/v1', modelId: 'm' });
     await expect(provider.decide(baseRequest)).rejects.toThrow(/500/);
+  });
+
+  it('tolerates endpoints that already include /chat/completions', async () => {
+    const { calls } = stubFetch({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] });
+    const provider = new OpenAICompatibleProvider({
+      endpoint: 'https://openrouter.ai/api/v1/chat/completions',
+      apiKey: 'k',
+      modelId: 'x',
+    });
+    await provider.decide(baseRequest);
+    expect(calls[0].url).toBe('https://openrouter.ai/api/v1/chat/completions');
   });
 
   it('rejects unparseable tool arguments instead of dispatching', async () => {
