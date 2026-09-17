@@ -145,3 +145,35 @@ describe('run lock', () => {
     expect(lock.isRunning('t2')).toBe(false);
   });
 });
+
+describe('agent removal', () => {
+  it('purges a cancelled agent via coordinator message', async () => {
+    const snapshots = new MemorySnapshotBackend();
+    const coord = createCoordinator({ snapshots, settings: settings(), browserBackend: new FakeBrowserBackend() });
+    await coord.boot();
+    const s = coord.ready().store;
+    const project = s.createProject('P');
+    const agent = s.createAgent({
+      projectId: project.id, role: 'r', objective: 'o', status: 'RUNNING',
+      modelConfig: { providerId: 'x', modelId: 'y' }, skillIds: [], budget: {}, workspaceMounts: [], delegationDepth: 0,
+    });
+    const task = s.createTask({ projectId: project.id, ownerAgentId: agent.id, title: 'T', objective: 'O' });
+    s.transitionTask(task.id, 'READY', 'r');
+    s.transitionTask(task.id, 'RUNNING', 'r');
+    s.transitionTask(task.id, 'CANCELLED', 'c');
+    s.setAgentStatus(agent.id, 'CANCELLED');
+    await coord.persist();
+
+    const res = (await coord.handleMessage({ type: 'cabot.remove-agent', agentId: agent.id })) as {
+      ok: boolean;
+      removed: { removedAgents: number };
+    };
+    expect(res.ok).toBe(true);
+    expect(res.removed.removedAgents).toBe(1);
+    expect(coord.ready().store.agents.has(agent.id)).toBe(false);
+
+    // Removal is durable: reboot from the persisted snapshot.
+    await coord.reboot();
+    expect(coord.ready().store.agents.has(agent.id)).toBe(false);
+  });
+});

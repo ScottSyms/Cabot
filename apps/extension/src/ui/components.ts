@@ -37,25 +37,32 @@ export function renderAgentRail(
   views: AgentView[],
   selectedId: string | null,
   onSelect: (agentId: string) => void,
+  onRemove?: (agentId: string) => void,
 ): void {
   container.innerHTML = '';
-  const active = views.filter((v) => !['COMPLETED', 'FAILED', 'CANCELLED'].includes(v.agent.status));
-  const history = views.filter((v) => ['COMPLETED', 'FAILED', 'CANCELLED'].includes(v.agent.status));
+  const isTerminal = (s: string): boolean => ['COMPLETED', 'FAILED', 'CANCELLED'].includes(s);
+  const active = views.filter((v) => !isTerminal(v.agent.status));
+  const history = views.filter((v) => isTerminal(v.agent.status));
   if (views.length === 0) {
     container.append(el('p', 'No agents yet. Start a task to create one.', { class: 'muted' }));
     return;
   }
-  for (const v of [...active].reverse()) container.append(railRow(v, selectedId, onSelect));
+  for (const v of [...active].reverse()) container.append(railRow(v, selectedId, onSelect, undefined));
   if (history.length > 0) {
     const h = el('div', undefined, { class: 'rail-history' });
     h.append(el('div', `History (${history.length})`, { class: 'rail-history-title' }));
-    for (const v of [...history].reverse()) h.append(railRow(v, selectedId, onSelect));
+    for (const v of [...history].reverse()) h.append(railRow(v, selectedId, onSelect, onRemove));
     container.append(h);
   }
 }
 
-function railRow(v: AgentView, selectedId: string | null, onSelect: (agentId: string) => void): HTMLElement {
-  const row = el('button', undefined, { class: `rail-row${v.agent.id === selectedId ? ' selected' : ''}` });
+function railRow(
+  v: AgentView,
+  selectedId: string | null,
+  onSelect: (agentId: string) => void,
+  onRemove?: (agentId: string) => void,
+): HTMLElement {
+  const row = el('div', undefined, { class: `rail-row${v.agent.id === selectedId ? ' selected' : ''}`, role: 'button', tabindex: '0' });
   const dot = el('span', undefined, { class: `dot dot-${statusGroup(v.agent.status)}` });
   const main = el('span', undefined, { class: 'rail-main' });
   main.append(el('span', v.name, { class: 'rail-name' }));
@@ -64,7 +71,21 @@ function railRow(v: AgentView, selectedId: string | null, onSelect: (agentId: st
   main.append(sub);
   row.append(dot, main);
   if (v.pendingApprovals > 0) row.append(el('span', `!${v.pendingApprovals}`, { class: 'badge badge-warn' }));
+  if (onRemove) {
+    const remove = el('button', '✕', { class: 'rail-remove', title: 'Remove from history' });
+    remove.onclick = (e) => {
+      e.stopPropagation();
+      onRemove(v.agent.id);
+    };
+    row.append(remove);
+  }
   row.onclick = () => onSelect(v.agent.id);
+  row.onkeydown = (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onSelect(v.agent.id);
+    }
+  };
   return row;
 }
 

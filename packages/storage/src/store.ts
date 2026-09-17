@@ -26,7 +26,7 @@ import type {
   TaskId,
   TaskStatus,
 } from '@cabot/contracts';
-import { canTransitionTask, terminalTaskStatus } from '@cabot/contracts';
+import { canTransitionTask, terminalAgentStatus, terminalTaskStatus } from '@cabot/contracts';
 
 export interface CommitRecord {
   taskId: TaskId;
@@ -478,6 +478,76 @@ export class DurableStore {
     agent.status = status;
     agent.updatedAt = nowIso();
     return agent;
+  }
+
+  /**
+   * Remove a finished agent from history, purging its owned tasks and every
+   * dependent record in one transaction. Refuses while the agent, any owned
+   * task, or any descendant agent is still non-terminal — deletion must never
+   * race live work. Descendant agents are purged with the parent only when
+   * the whole subtree is terminal.
+   */
+  purgeAgent(agentId: AgentId): { removedAgents: number; removedTasks: number; removedMessages: number } {
+    const agent = this.agents.get(agentId);
+    if (!agent) throw new StoreError(`unknown agent ${agentId}`);
+    if (!terminalAgentStatus(agent.status)) {
+      throw new StoreError(`cannot remove agent ${agentId}: status ${agent.status} is not terminal`);
+    }
+    // Validate the whole subtree before mutating anything.
+    const subtree: AgentId[] = [];
+    const visit = (id: AgentId): void => {
+      const a = this.agents.get(id);
+      if (!a) return;
+      if (!terminalAgentStatus(a.status)) {
+        throw new StoreError(`cannot remove agent ${agentId}: descendant ${id} is ${a.status}, not terminal`);
+      }
+      subtree.push(id);
+      for (const child of this.agents.values()) {
+        if (child.parentAgentId === id) visit(child.id);
+      }
+    };
+    visit(agentId);
+    for (const id of subtree) {
+      for (const t of this.tasks.values()) {
+        if (t.ownerAgentId === id && !terminalTaskStatus(t.status)) {
+          throw new StoreError(`cannot remove agent ${agentId}: task ${t.id} is ${t.status}, not terminal`);
+        }
+      }
+    }
+
+    return this.transaction(() => {
+      const ids = new Set(subtree);
+      const taskIds = new Set(
+        [...this.tasks.values()].filter((t) => ids.has(t.ownerAgentId)).map((t) => t.id),
+      );
+      for (const tid of taskIds) {
+        this.tasks.delete(tid);
+        this.events = this.events.filter((e) => e.taskId !== tid);
+        this.conversation = this.conversation.filter((m) => m.taskId !== tid);
+        this.checkpoints.delete(tid);
+      }
+      for (const [id, op] of [...this.operations]) if (taskIds.has(op.taskId)) this.operations.delete(id);
+      for (const [id, a] of [...this.approvals]) if (taskIds.has(a.taskId)) this.approvals.delete(id);
+      for (const [id, s] of [...this.sources]) if (taskIds.has(s.taskId)) this.sources.delete(id);
+      for (const [id, art] of [...this.artifacts]) if (taskIds.has(art.taskId)) this.artifacts.delete(id);
+      for (const [key, h] of [...this.externalHandles]) if (taskIds.has(h.taskId)) this.externalHandles.delete(key);
+      for (const [id, g] of [...this.grants]) {
+        if (g.taskId && taskIds.has(g.taskId)) this.grants.delete(id);
+      }
+      let removedMessages = 0;
+      for (const [id, m] of [...this.messages]) {
+        if (ids.has(m.to) || ids.has(m.from)) {
+          this.messages.delete(id);
+          removedMessages += 1;
+        }
+      }
+      for (const id of ids) {
+        this.agents.delete(id);
+        this.queue.delete(id);
+        this.delivered.delete(id);
+      }
+      return { removedAgents: ids.size, removedTasks: taskIds.size, removedMessages };
+    });
   }
 
   // ---- runnable queue with leases + fencing ----

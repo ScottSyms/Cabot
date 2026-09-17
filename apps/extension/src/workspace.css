@@ -246,3 +246,16 @@ section.approvals { border-color: var(--warn); }
   .rail { border-right: none; border-bottom: 1px solid var(--border); max-height: 220px; }
   .msg { max-width: 92%; }
 }
+
+.rail-remove {
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  padding: 2px 6px;
+  font-size: 12px;
+  line-height: 1;
+  border-radius: 4px;
+  flex: none;
+  margin-top: 1px;
+}
+.rail-remove:hover { background: var(--bad); color: #fff; }

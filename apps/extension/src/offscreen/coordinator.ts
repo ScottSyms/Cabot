@@ -54,6 +54,7 @@ export type CoordinatorMessage =
   | { type: 'cabot.task-detail'; taskId: string }
   | { type: 'cabot.list-agents' }
   | { type: 'cabot.agent-detail'; agentId: string }
+  | { type: 'cabot.remove-agent'; agentId: string }
   | { type: 'cabot.pending-approvals' }
   | { type: 'cabot.decide-approval'; approvalId: string; decision: 'granted' | 'denied' }
   | { type: 'cabot.pause-task'; taskId: string }
@@ -294,6 +295,12 @@ export function createCoordinator(deps: CoordinatorDeps) {
         return { agents: queries.listAgents() };
       case 'cabot.agent-detail':
         return { agent: queries.inspectAgent(msg.agentId) };
+      case 'cabot.remove-agent': {
+        const removed = queries.removeAgent(msg.agentId);
+        await persist();
+        emit('agent-removed', undefined, { agentId: msg.agentId });
+        return { ok: true, removed };
+      }
       case 'cabot.pending-approvals':
         return { approvals: queries.listPendingApprovals() };
       case 'cabot.decide-approval':

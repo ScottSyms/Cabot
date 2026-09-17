@@ -104,7 +104,7 @@ export function renderWorkspace(root: HTMLElement, client: PanelClient): { refre
         state.selectedAgentId = (firstActive ?? state.views[state.views.length - 1])?.agent.id ?? null;
         syncHash();
       }
-      renderAgentRail(railList, state.views, state.selectedAgentId, select);
+      renderAgentRail(railList, state.views, state.selectedAgentId, select, removeAgent);
       await renderMain();
     } catch (e) {
       setStatus(`refresh failed: ${errorText(e)}`);
@@ -191,8 +191,25 @@ export function renderWorkspace(root: HTMLElement, client: PanelClient): { refre
     state.selectedAgentId = agentId;
     syncHash();
     msgInput.value = state.drafts.get(agentId) ?? '';
-    renderAgentRail(railList, state.views, state.selectedAgentId, select);
+    renderAgentRail(railList, state.views, state.selectedAgentId, select, removeAgent);
     void renderMain();
+  }
+
+  function removeAgent(agentId: string): void {
+    const view = state.views.find((v) => v.agent.id === agentId);
+    const label = view?.name ?? agentId;
+    if (!window.confirm(`Remove "${label}" and its transcript from history? This cannot be undone.`)) return;
+    setStatus('removing…');
+    checked(client.send<{ removed: { removedAgents: number; removedTasks: number } }>({ type: 'cabot.remove-agent', agentId }))
+      .then((res) => {
+        if (state.selectedAgentId === agentId) {
+          state.selectedAgentId = null;
+          state.drafts.delete(agentId);
+        }
+        setStatus(`removed ${res.removed.removedAgents} agent, ${res.removed.removedTasks} task`);
+        return refresh();
+      })
+      .catch((e) => setStatus(`remove failed: ${errorText(e)}`));
   }
 
   async function act(msg: unknown): Promise<void> {

@@ -110,6 +110,14 @@ export class CabotRuntimeService {
       .map((a) => ({ ...a, spent: { ...a.spent } }));
   }
 
+  /**
+   * Remove a finished agent (and its tasks/transcript) from history.
+   * Refused for anything still active — see DurableStore.purgeAgent.
+   */
+  removeAgent(agentId: AgentId): { removedAgents: number; removedTasks: number; removedMessages: number } {
+    return this.store.purgeAgent(agentId);
+  }
+
   // ---- inspection (read-only; feeds side panel + dashboard) ----
 
   getTaskDetail(taskId: TaskId, eventLimit = 50): TaskDetail {
