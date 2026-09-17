@@ -30,7 +30,7 @@ export function saveStore(db: SqliteDatabase, store: DurableStore): void {
   db.exec('BEGIN IMMEDIATE');
   try {
     db.exec(
-      'DELETE FROM projects; DELETE FROM tasks; DELETE FROM agents; DELETE FROM operations; DELETE FROM events; DELETE FROM checkpoints; DELETE FROM messages; DELETE FROM delivered; DELETE FROM artifacts; DELETE FROM sources; DELETE FROM grants; DELETE FROM approvals; DELETE FROM externals; DELETE FROM queue;',
+      'DELETE FROM projects; DELETE FROM tasks; DELETE FROM agents; DELETE FROM operations; DELETE FROM events; DELETE FROM conversation; DELETE FROM checkpoints; DELETE FROM messages; DELETE FROM delivered; DELETE FROM artifacts; DELETE FROM sources; DELETE FROM grants; DELETE FROM approvals; DELETE FROM externals; DELETE FROM queue;',
     );
     const insProject = db.prepare('INSERT INTO projects (id, json) VALUES (?, ?)');
     for (const p of store.projects.values()) insProject.run(p.id, JSON.stringify(p));
@@ -42,6 +42,8 @@ export function saveStore(db: SqliteDatabase, store: DurableStore): void {
     for (const o of store.operations.values()) insOp.run(o.id, o.taskId, JSON.stringify(o));
     const insEvt = db.prepare('INSERT INTO events (id, task_id, seq, json) VALUES (?, ?, ?, ?)');
     for (const e of store.events) insEvt.run(e.id, e.taskId, e.seq, JSON.stringify(e));
+    const insConv = db.prepare('INSERT INTO conversation (id, task_id, json) VALUES (?, ?, ?)');
+    for (const m of store.conversation) insConv.run(m.id, m.taskId, JSON.stringify(m));
     const insCp = db.prepare('INSERT INTO checkpoints (task_id, revision, json) VALUES (?, ?, ?)');
     for (const [taskId, cps] of store.checkpoints) {
       for (const c of cps) insCp.run(taskId, c.revision, JSON.stringify(c));
@@ -102,6 +104,9 @@ export function loadStore(db: SqliteDatabase): DurableStore {
     store.events.push(JSON.parse(j) as never);
   }
   store.events.sort((a, b) => (a.taskId < (b as unknown as { taskId: string }).taskId ? -1 : 1) || (a.seq - (b as unknown as { seq: number }).seq));
+  for (const j of col('conversation')) {
+    store.conversation.push(JSON.parse(j) as never);
+  }
   for (const j of col('checkpoints')) {
     const c = JSON.parse(j) as { taskId: string };
     const list = store.checkpoints.get(c.taskId) ?? [];

@@ -189,6 +189,24 @@ export interface AgentMessage {
   createdAt: ISODateString;
 }
 
+/**
+ * User-facing conversation record. Unlike TaskEvent (operational log),
+ * this is the transcript shown in the UI: user steering, agent prose, and
+ * compact tool-call chips. Persisted durably per task, capped for size.
+ */
+export type ConversationRole = 'user' | 'agent' | 'tool';
+
+export interface ConversationMessage {
+  id: MessageId;
+  taskId: TaskId;
+  agentId: AgentId;
+  role: ConversationRole;
+  text: string;
+  toolId?: string;
+  ok?: boolean;
+  createdAt: ISODateString;
+}
+
 export interface Artifact {
   id: ArtifactId;
   projectId: ProjectId;

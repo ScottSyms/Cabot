@@ -4,7 +4,7 @@ import type { Agent, AgentId, ProjectId, Task, TaskId } from '@cabot/contracts';
 import type { ModelProvider } from '@cabot/providers';
 import { DurableStore } from '@cabot/storage/browser-chrome';
 import { CapabilityBroker } from '@cabot/policy';
-import { runUntilSettled, type ToolExecutor } from './loop.js';
+import { runUntilSettled, syncAgentToTask, type ToolExecutor } from './loop.js';
 import {
   getDashboard,
   getTaskDetail,
@@ -60,6 +60,7 @@ export class CabotRuntimeService {
     const t = this.store.tasks.get(taskId);
     if (!t) throw new Error(`unknown task ${taskId}`);
     if (t.status === 'RUNNING') this.store.transitionTask(taskId, 'SUSPENDED', 'paused by user');
+    syncAgentToTask(this.store, taskId, t.ownerAgentId);
   }
 
   resumeTask(taskId: TaskId): void {
@@ -68,6 +69,7 @@ export class CabotRuntimeService {
     if (['SUSPENDED', 'INTERRUPTED', 'BLOCKED'].includes(t.status)) {
       this.store.transitionTask(taskId, 'READY', 'resumed by user');
     }
+    syncAgentToTask(this.store, taskId, t.ownerAgentId);
   }
 
   cancelTask(taskId: TaskId): void {
@@ -77,6 +79,7 @@ export class CabotRuntimeService {
     // Parked tasks have no running loop to observe a request: cancel directly.
     if (['CREATED', 'READY', 'SUSPENDED', 'APPROVAL_REQUIRED', 'BLOCKED', 'INTERRUPTED'].includes(t.status)) {
       this.store.transitionTask(taskId, 'CANCELLED', 'cancelled by user');
+      syncAgentToTask(this.store, taskId, t.ownerAgentId);
       return;
     }
     // Active task: request cancellation; the loop honours it at the next
@@ -135,6 +138,7 @@ export class CabotRuntimeService {
     } else {
       this.store.transitionTask(task.id, 'BLOCKED', `approval denied for ${approval.toolId}`);
     }
+    syncAgentToTask(this.store, task.id, task.ownerAgentId);
   }
 
   /**
@@ -151,6 +155,7 @@ export class CabotRuntimeService {
     const trimmed = text.trim().slice(0, 4000);
     if (!trimmed) throw new Error('message is empty');
     this.store.appendEvent(taskId, 'user.message', trimmed);
+    this.store.appendConversation(taskId, task.ownerAgentId, 'user', trimmed);
     if (['SUSPENDED', 'BLOCKED', 'INTERRUPTED'].includes(task.status)) {
       this.store.transitionTask(taskId, 'READY', 'resumed by user message');
     } else {
@@ -164,6 +169,10 @@ export class CabotRuntimeService {
     const task = this.store.tasks.get(taskId);
     if (task?.status === 'CREATED') this.store.transitionTask(taskId, 'READY', 'auto-ready');
     if (this.store.tasks.get(taskId)?.status === 'READY') this.store.transitionTask(taskId, 'RUNNING', 'auto-run');
-    return runUntilSettled(this.store, this.broker, this.model, executor, taskId, agentId, maxTurns, onTurn);
+    try {
+      return await runUntilSettled(this.store, this.broker, this.model, executor, taskId, agentId, maxTurns, onTurn);
+    } finally {
+      syncAgentToTask(this.store, taskId, agentId);
+    }
   }
 }

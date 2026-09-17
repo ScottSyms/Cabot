@@ -1,4 +1,5 @@
-import { renderSidePanel, type PanelClient } from './sidepanel.js';
+import { renderSidePanel } from './sidepanel.js';
+import type { PanelClient } from '../ui/dom.js';
 
 const client: PanelClient = {
   send<T>(msg: unknown): Promise<T> {

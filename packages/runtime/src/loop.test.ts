@@ -170,3 +170,53 @@ describe('cancellation and pause', () => {
     expect(ran()).toBe(1);
   });
 });
+
+describe('agent status sync', () => {
+  it('tracks WAITING_FOR_MODEL, WAITING_FOR_TOOL, and COMPLETED across a run', async () => {
+    const { store, broker, agent, task } = setup();
+    const seen: Record<string, string[]> = { decide: [], execute: [] };
+    const model = new FakeModelProvider();
+    model.script(task.id, [
+      { kind: 'tool', toolId: 'notes.write', args: { n: 1 }, argsHash: 'h1', idempotencyKey: 'k1' },
+      { kind: 'done', summary: 'finished' },
+    ]);
+    const observingModel = {
+      id: 'obs',
+      listModels: async () => [],
+      decide: async (req: Parameters<FakeModelProvider['decide']>[0]) => {
+        seen.decide.push(store.agents.get(agent.id)?.status ?? '?');
+        return model.decide(req);
+      },
+    };
+    const executor: ToolExecutor = {
+      execute: async (toolId, args) => {
+        seen.execute.push(store.agents.get(agent.id)?.status ?? '?');
+        return { ok: true, resultHash: `r:${JSON.stringify(args)}` };
+      },
+    };
+    const svc = new CabotRuntimeService(store, broker, observingModel, executor);
+    expect((await svc.runTask(task.id, agent.id)).status).toBe('complete');
+    expect(seen.decide).toEqual(['WAITING_FOR_MODEL', 'WAITING_FOR_MODEL']);
+    expect(seen.execute).toEqual(['WAITING_FOR_TOOL']);
+    expect(store.agents.get(agent.id)?.status).toBe('COMPLETED');
+  });
+
+  it('parks the agent in WAITING_FOR_USER and cancels to CANCELLED', async () => {
+    const { store, broker, agent, task } = setup();
+    broker.registerTool({
+      id: 'external.publish', source: 'builtin', name: 'publish', description: 'p',
+      inputSchema: { type: 'object' }, capabilityClass: 'consequential', provenance: 'builtin',
+    });
+    broker.grant({ principal: { kind: 'core-agent', agentId: agent.id }, toolId: 'external.publish', scope: 'task', taskId: task.id });
+    const model = new FakeModelProvider();
+    model.script(task.id, [
+      { kind: 'tool', toolId: 'external.publish', args: {}, argsHash: 'h', idempotencyKey: 'k' },
+    ]);
+    const svc = new CabotRuntimeService(store, broker, model, { execute: async () => ({ ok: true }) });
+    expect((await svc.runTask(task.id, agent.id, 3)).status).toBe('approval-required');
+    expect(store.agents.get(agent.id)?.status).toBe('WAITING_FOR_USER');
+    svc.cancelTask(task.id);
+    expect(store.tasks.get(task.id)?.status).toBe('CANCELLED');
+    expect(store.agents.get(agent.id)?.status).toBe('CANCELLED');
+  });
+});

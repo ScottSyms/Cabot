@@ -21,6 +21,7 @@ export function serializeStore(store: DurableStore): string {
     agents: [...store.agents.values()],
     operations: [...store.operations.values()],
     events: store.events,
+    conversation: store.conversation,
     checkpoints: [...store.checkpoints.entries()],
     messages: [...store.messages.values()],
     delivered: [...store.delivered.entries()].map(([k, set]) => [k, [...set]]),
@@ -45,6 +46,7 @@ export function restoreStore(json: string): DurableStore {
   put(store.agents, 'agents');
   put(store.operations, 'operations');
   store.events = rows('events');
+  store.conversation = rows('conversation');
   store.checkpoints = new Map(d.checkpoints as [string, never][]) as DurableStore['checkpoints'];
   put(store.messages, 'messages');
   store.delivered = new Map(

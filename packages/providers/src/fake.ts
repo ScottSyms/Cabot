@@ -5,10 +5,16 @@ import type { LoopAction, ModelDescriptor, ModelProvider, ModelRequest, ModelRes
 export class FakeModelProvider implements ModelProvider {
   id = 'fake';
   private scripts = new Map<string, LoopAction[]>();
+  private texts = new Map<string, (string | undefined)[]>();
   calls = 0;
 
   script(taskId: string, actions: LoopAction[]): void {
     this.scripts.set(taskId, [...actions]);
+  }
+
+  /** Optional per-turn assistant prose, consumed in script order. */
+  say(taskId: string, ...texts: (string | undefined)[]): void {
+    this.texts.set(taskId, [...texts]);
   }
 
   async listModels(): Promise<ModelDescriptor[]> {
@@ -19,6 +25,7 @@ export class FakeModelProvider implements ModelProvider {
     this.calls += 1;
     const queue = this.scripts.get(request.taskId);
     const action = queue?.shift() ?? { kind: 'done', summary: 'nothing scripted; done' };
-    return { action };
+    const text = this.texts.get(request.taskId)?.shift();
+    return text === undefined ? { action } : { action, text };
   }
 }

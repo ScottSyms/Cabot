@@ -71,6 +71,33 @@ export interface CoordinatorDeps {
   browserBackend: BrowserBackend;
 }
 
+/**
+ * One loop per task. A second run request while one is in flight is rejected
+ * so steering messages queue into the active run instead of racing it.
+ */
+export function createRunLock() {
+  const inFlight = new Set<string>();
+  return {
+    isRunning: (id: string): boolean => inFlight.has(id),
+    tryAcquire: (id: string): boolean => {
+      if (inFlight.has(id)) return false;
+      inFlight.add(id);
+      return true;
+    },
+    release: (id: string): void => {
+      inFlight.delete(id);
+    },
+    async runExclusive<T>(id: string, fn: () => Promise<T>): Promise<T> {
+      if (!this.tryAcquire(id)) throw new Error(`run already in flight for ${id}`);
+      try {
+        return await fn();
+      } finally {
+        this.release(id);
+      }
+    },
+  };
+}
+
 /** File-backed settings (e.g. OPFS) with latch-to-fallback on failure. */
 export function withFallbackSettings(primary: SettingsStore, fallback: SettingsStore): SettingsStore {
   let useFallback = false;
@@ -122,6 +149,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
   let store: DurableStore | undefined;
   let broker: CapabilityBroker | undefined;
   let warning: string | null = null;
+  const runs = createRunLock();
 
   async function persist(): Promise<void> {
     if (store) await deps.snapshots.save(serializeStore(store));
@@ -207,7 +235,12 @@ export function createCoordinator(deps: CoordinatorDeps) {
     if (!project) throw new Error('project missing for task');
     const executor = new BrowserToolExecutor(deps.browserBackend, s, task.id, project.id);
     const svc = new CabotRuntimeService(s, b, provider, executor);
-    const outcome = await svc.runTask(task.id, task.ownerAgentId, 25, () => persist().catch(() => {}));
+    const outcome = await svc.runTask(task.id, task.ownerAgentId, 25, () => {
+      // Per-turn: persist, then tell UIs to refresh (selection, drafts,
+      // and scroll are preserved panel-side).
+      emit('task-progress', task.id);
+      return persist().catch(() => {});
+    });
     await persist();
     const status = (outcome as { status: string }).status;
     emit(status === 'approval-required' ? 'approval-requested' : `task-${status}`, task.id, { outcome });
@@ -235,7 +268,10 @@ export function createCoordinator(deps: CoordinatorDeps) {
     const executor = new BrowserToolExecutor(deps.browserBackend, s, task.id, project.id);
     const svc = new CabotRuntimeService(s, b, provider, executor);
     await persist();
-    const outcome = await svc.runTask(task.id, agent.id, 25, () => persist().catch(() => {}));
+    const outcome = await svc.runTask(task.id, agent.id, 25, () => {
+      emit('task-progress', task.id);
+      return persist().catch(() => {});
+    });
     await persist();
     const done = (outcome as { status: string }).status;
     emit(done === 'approval-required' ? 'approval-requested' : `task-${done}`, task.id, { outcome });
@@ -277,12 +313,21 @@ export function createCoordinator(deps: CoordinatorDeps) {
         await persist();
         return { ok: true };
       case 'cabot.run-summary':
+        // Each run creates its own task, so no lock needed here.
         return runSummary(msg.objective, msg.projectName);
       case 'cabot.send-message': {
         queries.sendUserMessage(msg.taskId, msg.text);
         await persist();
-        emit('user-message', msg.taskId);
-        return { taskId: msg.taskId, ...(await continueTask(msg.taskId) as Record<string, unknown>) };
+        if (runs.isRunning(msg.taskId)) {
+          // A loop is already working this task; the message is in its
+          // context and the next turn picks it up. Never start a second loop.
+          emit('user-message-queued', msg.taskId);
+          return { taskId: msg.taskId, queued: true as const };
+        }
+        return runs.runExclusive(msg.taskId, async () => ({
+          taskId: msg.taskId,
+          ...(await continueTask(msg.taskId) as Record<string, unknown>),
+        }));
       }
       case 'cabot.get-settings': {
         const s = await deps.settings.load();

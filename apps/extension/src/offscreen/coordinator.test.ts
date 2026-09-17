@@ -118,3 +118,30 @@ describe('provider settings', () => {
     expect('apiKey' in got.settings).toBe(false);
   });
 });
+
+describe('run lock', () => {
+  it('rejects a second concurrent run on the same task', async () => {
+    const { createRunLock } = await import('./coordinator.js');
+    const lock = createRunLock();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const first = lock.runExclusive('t1', () => gate);
+    await expect(lock.runExclusive('t1', async () => 1)).rejects.toThrow(/already in flight/);
+    expect(lock.isRunning('t1')).toBe(true);
+    release();
+    await first;
+    expect(lock.isRunning('t1')).toBe(false);
+    expect(await lock.runExclusive('t1', async () => 42)).toBe(42);
+  });
+
+  it('releases the lock when the run throws', async () => {
+    const { createRunLock } = await import('./coordinator.js');
+    const lock = createRunLock();
+    await expect(lock.runExclusive('t2', async () => {
+      throw new Error('boom');
+    })).rejects.toThrow('boom');
+    expect(lock.isRunning('t2')).toBe(false);
+  });
+});

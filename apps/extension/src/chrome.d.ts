@@ -12,6 +12,10 @@ interface ChromeApi {
     onMessage: { addListener(fn: (msg: unknown, sender: unknown, respond: (r: unknown) => void) => void): void };
     onConnect: { addListener(fn: (port: ChromeRuntimePort) => void): void };
     sendMessage(msg: unknown): Promise<unknown>;
+    getURL(path: string): string;
+  };
+  tabs: {
+    create(opts: { url: string }): Promise<unknown>;
   };
   alarms: {
     create(name: string, info: { periodInMinutes?: number; when?: number }): void;

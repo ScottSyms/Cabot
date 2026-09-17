@@ -144,3 +144,23 @@ describe('user messages', () => {
 function setup_projectId(store: DurableStore): string {
   return [...store.projects.values()][0].id;
 }
+
+describe('conversation transcript', () => {
+  it('orders user, agent, tool, and completion messages', async () => {
+    const { store, svc, agent, task, model } = setup();
+    model.script(task.id, [
+      { kind: 'tool', toolId: 'notes.write', args: {}, argsHash: 'h1', idempotencyKey: 'k1' },
+      { kind: 'done', summary: 'all written' },
+    ]);
+    model.say(task.id, 'Writing the note now.', undefined);
+    svc.sendUserMessage(task.id, 'please write it');
+    expect((await svc.runTask(task.id, agent.id)).status).toBe('complete');
+    const conv = store.forTaskConversation(task.id);
+    expect(conv.map((m) => m.role)).toEqual(['user', 'agent', 'tool', 'agent']);
+    expect(conv[0].text).toBe('please write it');
+    expect(conv[1].text).toBe('Writing the note now.');
+    expect(conv[2]).toMatchObject({ toolId: 'notes.write', ok: true });
+    expect(conv[3].text).toBe('all written');
+    expect(svc.getTaskDetail(task.id).conversation).toHaveLength(4);
+  });
+});

@@ -7,6 +7,7 @@ import type {
   Approval,
   Artifact,
   CapabilityGrant,
+  ConversationMessage,
   Operation,
   Source,
   Task,
@@ -19,6 +20,7 @@ export interface TaskDetail {
   task: Task;
   agents: Agent[];
   events: TaskEvent[];
+  conversation: ConversationMessage[];
   operations: Operation[];
   approvals: Approval[];
   sources: Source[];
@@ -38,8 +40,7 @@ export interface DashboardSummary {
   blockedTasks: { id: string; title: string; status: string }[];
 }
 
-export function getTaskDetail(store: DurableStore, taskId: TaskId, eventLimit = 50): TaskDetail {
-  const task = store.tasks.get(taskId);
+export function getTaskDetail(store: DurableStore, taskId: TaskId, eventLimit = 50): TaskDetail {  const task = store.tasks.get(taskId);
   if (!task) throw new Error(`unknown task ${taskId}`);
   const agentIds = new Set<string>([task.ownerAgentId]);
   for (const op of store.operations.values()) {
@@ -52,6 +53,7 @@ export function getTaskDetail(store: DurableStore, taskId: TaskId, eventLimit = 
       return a ? [{ ...a, spent: { ...a.spent } }] : [];
     }),
     events: store.events.filter((e) => e.taskId === taskId).slice(-eventLimit),
+    conversation: store.forTaskConversation(taskId),
     operations: [...store.operations.values()].filter((o) => o.taskId === taskId),
     approvals: [...store.approvals.values()].filter((a) => a.taskId === taskId),
     sources: [...store.sources.values()].filter((s) => s.taskId === taskId),

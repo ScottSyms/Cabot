@@ -91,6 +91,33 @@ describe('openai-compatible provider', () => {
     await expect(provider.decide(baseRequest)).rejects.toThrow(/unreachable.*openrouter.*permits this host/);
   });
 
+  it('captures assistant text on tool-call turns and sends transcript context', async () => {
+    const { calls } = stubFetch({
+      choices: [
+        {
+          message: {
+            content: 'Checking the page now.',
+            tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'browser.read_page', arguments: '{}' } }],
+          },
+          finish_reason: 'tool_calls',
+        },
+      ],
+    });
+    const provider = new OpenAICompatibleProvider({ endpoint: 'http://localhost:11434/v1', modelId: 'm' });
+    const res = await provider.decide({
+      ...baseRequest,
+      recentConversation: [
+        { role: 'user', text: 'summarize this' },
+        { role: 'agent', text: 'On it.' },
+      ],
+    });
+    expect(res.text).toBe('Checking the page now.');
+    expect(res.action.kind).toBe('tool');
+    const sent = JSON.parse(calls[0].init.body as string) as { messages: { role: string; content: string }[] };
+    expect(sent.messages.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
+    expect(sent.messages[2].content).toBe('On it.');
+  });
+
   it('rejects unparseable tool arguments instead of dispatching', async () => {
     stubFetch({
       choices: [{ message: { tool_calls: [{ id: 'c1', type: 'function', function: { name: 'x', arguments: '{broken' } }] }, finish_reason: 'tool_calls' }],

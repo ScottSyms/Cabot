@@ -11,6 +11,8 @@ import type {
   BudgetReservation,
   CapabilityGrant,
   Checkpoint,
+  ConversationMessage,
+  ConversationRole,
   ExternalTaskHandle,
   Operation,
   OperationId,
@@ -111,12 +113,16 @@ export function sha256HexBytes(input: Uint8Array | string): string {
 
 export class StoreError extends Error {}
 
+export const CONVERSATION_PER_TASK_CAP = 500;
+export const CONVERSATION_GLOBAL_CAP = 5000;
+
 export class DurableStore {
   projects = new Map<string, Project>();
   tasks = new Map<TaskId, Task>();
   agents = new Map<AgentId, Agent>();
   operations = new Map<OperationId, Operation>();
   events: TaskEvent[] = [];
+  conversation: ConversationMessage[] = [];
   checkpoints = new Map<TaskId, Checkpoint[]>();
   messages = new Map<string, AgentMessage>();
   // per-recipient delivery cursor set (message ids delivered)
@@ -151,6 +157,7 @@ export class DurableStore {
       ),
       operations: new Map(this.operations),
       events: [...this.events],
+      conversation: [...this.conversation],
       checkpoints: new Map([...this.checkpoints].map(([k, v]) => [k, [...v]] as [string, Checkpoint[]])),
       messages: new Map(this.messages),
       delivered: new Map([...this.delivered].map(([k, v]) => [k, new Set(v)] as [string, Set<string>])),
@@ -169,6 +176,7 @@ export class DurableStore {
     this.agents = s.agents;
     this.operations = s.operations;
     this.events = s.events;
+    this.conversation = s.conversation;
     this.checkpoints = s.checkpoints;
     this.messages = s.messages;
     this.delivered = s.delivered;
@@ -239,6 +247,59 @@ export class DurableStore {
     const ev: TaskEvent = { id: newId('evt'), taskId, seq: seqN, type, summary, createdAt: nowIso() };
     this.events.push(ev);
     return ev;
+  }
+
+  /**
+   * Append a user-facing conversation message. Caps keep snapshots bounded:
+   * 500 per task, 5,000 globally with oldest-completed-tasks trimmed first.
+   */
+  appendConversation(
+    taskId: TaskId,
+    agentId: AgentId,
+    role: ConversationRole,
+    text: string,
+    extra?: { toolId?: string; ok?: boolean },
+  ): ConversationMessage {
+    const msg: ConversationMessage = {
+      id: newId('cmsg'),
+      taskId,
+      agentId,
+      role,
+      text: text.slice(0, 8000),
+      toolId: extra?.toolId,
+      ok: extra?.ok,
+      createdAt: nowIso(),
+    };
+    this.conversation.push(msg);
+    this.enforceConversationCaps(taskId);
+    return msg;
+  }
+
+  forTaskConversation(taskId: TaskId, limit = 200): ConversationMessage[] {
+    return this.conversation.filter((m) => m.taskId === taskId).slice(-limit);
+  }
+
+  private enforceConversationCaps(activeTaskId: TaskId): void {
+    let trimmed = 0;
+    const forTask = this.conversation.filter((m) => m.taskId === activeTaskId);
+    if (forTask.length > CONVERSATION_PER_TASK_CAP) {
+      const drop = new Set(forTask.slice(0, forTask.length - CONVERSATION_PER_TASK_CAP).map((m) => m.id));
+      this.conversation = this.conversation.filter((m) => !drop.has(m.id));
+      trimmed += drop.size;
+    }
+    while (this.conversation.length > CONVERSATION_GLOBAL_CAP) {
+      const idx = this.conversation.findIndex((m) => {
+        const t = this.tasks.get(m.taskId);
+        return m.taskId !== activeTaskId && t && ['COMPLETE', 'FAILED', 'CANCELLED'].includes(t.status);
+      });
+      const victim = idx >= 0 ? idx : this.conversation.findIndex((m) => m.taskId !== activeTaskId);
+      if (victim < 0) break; // only the active task remains; keep it intact
+      this.conversation.splice(victim, 1);
+      trimmed += 1;
+    }
+    if (trimmed > 0) {
+      this.appendEvent(activeTaskId, 'conversation.trimmed', `dropped ${trimmed} oldest messages over cap`);
+    }
   }
 
   commitCheckpoint(taskId: TaskId): Checkpoint {

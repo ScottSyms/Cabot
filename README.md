@@ -76,10 +76,12 @@ Then load unpacked:
    `manifest.json`). The bundle lives in `apps/extension/dist` and is
    git-ignored; rebuild after pulling.
 3. Open the side panel (action click opens it), configure the model
-   provider (Settings: endpoint, model id, optional API key), and run a
-   page summary.
-4. Close and reopen the browser: tasks, sources, and approvals persist as
-   OPFS files reconciled on startup.
+   provider (gear icon: endpoint, model id, optional API key).
+4. Click **Open workspace** for the full agent interface: select an agent
+   in the rail, follow its conversation, steer it from the composer,
+   and resolve approvals inline.
+5. Close and reopen the browser: agents, tasks, transcripts, sources,
+   and approvals persist as OPFS files reconciled on startup.
 
 Preview scope: read-only research tasks (list/read pages, capture sources).
 Write-path tools, Python/Skills, and MCP are implemented and tested but not

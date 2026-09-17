@@ -13,6 +13,8 @@ export interface ModelRequest {
   planRevision: number;
   tools: { id: string; description: string }[];
   recentEvents: { type: string; summary: string }[];
+  /** Recent user/agent transcript (capped by the caller). */
+  recentConversation?: { role: 'user' | 'agent'; text: string }[];
 }
 
 export type LoopAction =
@@ -22,6 +24,8 @@ export type LoopAction =
 
 export interface ModelResponse {
   action: LoopAction;
+  /** Assistant prose for this turn, if any — persisted as conversation. */
+  text?: string;
 }
 
 export interface ModelProvider {

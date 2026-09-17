@@ -42,6 +42,10 @@ export class OpenAICompatibleProvider implements ModelProvider {
       model: this.config.modelId,
       messages: [
         { role: 'system', content: `${request.systemPolicy}\nObjective: ${request.objective}` },
+        ...(request.recentConversation ?? []).map((m) => ({
+          role: m.role === 'agent' ? ('assistant' as const) : ('user' as const),
+          content: m.text,
+        })),
         ...request.recentEvents.map((e) => ({ role: 'user' as const, content: `[${e.type}] ${e.summary}` })),
       ],
       tools: request.tools.map((t) => ({
@@ -77,6 +81,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
     const data = (await res.json()) as ChatResponse;
     const message = data.choices[0]?.message;
     if (!message) throw new Error('empty model response');
+    // Assistant prose is captured even on tool-call turns — it becomes the
+    // conversation transcript rather than being discarded.
+    const text = (message.content ?? '').slice(0, 8000) || undefined;
     const call = message.tool_calls?.[0];
     if (call) {
       let args: unknown = {};
@@ -94,9 +101,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
         // Idempotency derives from the provider's tool-call id (unique per call).
         idempotencyKey: call.id,
       };
-      return { action };
+      return { action, text };
     }
-    return { action: { kind: 'done', summary: (message.content ?? '').slice(0, 2000) || 'model returned no content' } };
+    return { action: { kind: 'done', summary: (message.content ?? '').slice(0, 2000) || 'model returned no content' }, text };
   }
 }
 
