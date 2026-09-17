@@ -5,13 +5,13 @@
   "description": "Durable, capability-brokered autonomous agents in the browser sandbox.",
   "minimum_chrome_version": "116",
   "background": {
-    "service_worker": "dist/service-worker.js",
+    "service_worker": "dist/sw.js",
     "type": "module"
   },
   "side_panel": {
     "default_path": "dist/sidepanel.html"
   },
-  "permissions": ["sidePanel", "alarms", "storage", "offscreen", "tabs", "scripting", "activeTab", "contextMenus"],
+  "permissions": ["sidePanel", "alarms", "storage", "offscreen", "tabs", "scripting", "activeTab", "contextMenus", "unlimitedStorage"],
   "host_permissions": [],
   "offscreen_documents": [],
   "content_security_policy": {

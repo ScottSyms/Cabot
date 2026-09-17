@@ -2,7 +2,7 @@
 // The side panel consumes this; it holds no agent logic itself.
 import type { Agent, AgentId, ProjectId, Task, TaskId } from '@cabot/contracts';
 import type { ModelProvider } from '@cabot/providers';
-import { DurableStore } from '@cabot/storage';
+import { DurableStore } from '@cabot/storage/browser-chrome';
 import { CapabilityBroker } from '@cabot/policy';
 import { runUntilSettled, type ToolExecutor } from './loop.js';
 import {
@@ -129,11 +129,11 @@ export class CabotRuntimeService {
   }
 
   /** Run the checkpointed loop for a task (offscreen worker entry point). */
-  async runTask(taskId: TaskId, agentId: AgentId, maxTurns = 25) {
+  async runTask(taskId: TaskId, agentId: AgentId, maxTurns = 25, onTurn?: () => void | Promise<void>) {
     const executor = this.executor ?? { execute: async () => ({ ok: true }) };
     const task = this.store.tasks.get(taskId);
     if (task?.status === 'CREATED') this.store.transitionTask(taskId, 'READY', 'auto-ready');
     if (this.store.tasks.get(taskId)?.status === 'READY') this.store.transitionTask(taskId, 'RUNNING', 'auto-run');
-    return runUntilSettled(this.store, this.broker, this.model, executor, taskId, agentId, maxTurns);
+    return runUntilSettled(this.store, this.broker, this.model, executor, taskId, agentId, maxTurns, onTurn);
   }
 }

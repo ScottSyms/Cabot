@@ -11,7 +11,8 @@
 // pre-approved list is denied before execution; unknown packages never
 // install silently.
 import type { CabotTool } from '@cabot/contracts';
-import { DurableStore, sha256Hex, type BlobStore } from '@cabot/storage';
+import { DurableStore, sha256HexBytes } from '@cabot/storage/browser-chrome';
+import type { BlobStore } from '@cabot/storage';
 import type { ToolExecution, ToolExecutor } from '@cabot/runtime';
 
 export const PYTHON_EXECUTE_TOOL: CabotTool = {
@@ -94,7 +95,7 @@ export function persistOutputs(
     const bytes = outputs[name];
     if (!bytes) continue;
     const id = `${ctx.prefix}_${ctx.taskId}_${name.replace(/[^A-Za-z0-9_.-]/g, '_')}`;
-    const hash = sha256Hex(bytes);
+    const hash = sha256HexBytes(bytes);
     blobs.writeStaged(id, bytes);
     blobs.publish(id, bytes.length, hash);
     const meta = store.stageArtifact({
@@ -168,6 +169,6 @@ export class PythonToolExecutor implements ToolExecutor {
     } catch {
       resultValue = undefined;
     }
-    return { ok: true, resultHash: sha256Hex(new TextEncoder().encode(result.stdout + result.stderr)), result: { result: resultValue, artifacts: artifactIds, packagesUsed: result.packagesUsed } };
+    return { ok: true, resultHash: sha256HexBytes(result.stdout + result.stderr), result: { result: resultValue, artifacts: artifactIds, packagesUsed: result.packagesUsed } };
   }
 }

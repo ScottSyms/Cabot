@@ -5,7 +5,7 @@
 // APIs in the supervisor context; tests use FakeBrowserBackend.
 // Page reads are captured as durable Sources with origin provenance.
 import type { CabotTool } from '@cabot/contracts';
-import { DurableStore } from '@cabot/storage';
+import { DurableStore } from '@cabot/storage/browser-chrome';
 import type { ToolExecutor, ToolExecution } from '@cabot/runtime';
 
 export interface TabInfo {

@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { DurableStore, saveStore, openDatabase } from '@cabot/storage';
-import { createSupervisor } from './supervisor.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DurableStore, MemorySnapshotBackend, loadStore, openDatabase, saveStore, serializeStore } from '@cabot/storage';
+import { createSupervisor } from './supervisor.js';
 
 describe('supervisor', () => {
   it('rehydrates durable state and ensures runtime on demand', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cabot-sup-'));
+    void dir;
     const seed = new DurableStore();
     const project = seed.createProject('P');
     const agent = seed.createAgent({
@@ -16,27 +17,36 @@ describe('supervisor', () => {
       budget: {}, workspaceMounts: [], delegationDepth: 0,
     });
     const task = seed.createTask({ projectId: project.id, ownerAgentId: agent.id, title: 'T', objective: 'O' });
-    const dbSeed = openDatabase(join(dir, 'cabot.db'));
-    saveStore(dbSeed, seed);
-    dbSeed.close();
+    const snapshots = new MemorySnapshotBackend();
+    await snapshots.save(serializeStore(seed));
 
     let offscreenEnsured = 0;
     const notified: unknown[] = [];
     const sup = createSupervisor({
-      openDb: () => openDatabase(join(dir, 'cabot.db')),
+      snapshots,
       ensureOffscreenDocument: async () => {
         offscreenEnsured += 1;
       },
       notifyClients: (m) => notified.push(m),
     });
 
-    const res = (await sup.onMessage({ type: 'cabot.rehydrate' })) as { type: string; tasks: string[] };
+    // Sanity: seeded snapshot round-trips through the file-backed SQLite path too.
+    const dbSeed = openDatabase(join(dir, 'cabot.db'));
+    saveStore(dbSeed, seed);
+    dbSeed.close();
+    const dbLoad = openDatabase(join(dir, 'cabot.db'));
+    const viaSqlite = loadStore(dbLoad);
+    dbLoad.close();
+    expect(viaSqlite.tasks.get(task.id)?.title).toBe('T');
+
+    const res = (await sup.onMessage({ type: 'cabot.rehydrate' })) as { type: string };
     expect(res.type).toBe('rehydrated');
-    expect(res.tasks).toContain(task.id);
     expect(offscreenEnsured).toBe(1);
     expect(notified.length).toBe(1);
+
+    const rehydrated = await sup.rehydrate();
     // Non-terminal task reconciled to INTERRUPTED on load.
-    expect(sup.getCachedStore()?.tasks.get(task.id)?.status).toBe('INTERRUPTED');
+    expect(rehydrated.tasks.get(task.id)?.status).toBe('INTERRUPTED');
     expect(await sup.onMessage({ type: 'cabot.ping' })).toEqual({ type: 'cabot.pong' });
   });
 });

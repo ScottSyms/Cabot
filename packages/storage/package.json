@@ -6,6 +6,7 @@
     "@cabot/contracts": "0.1.0"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./browser-chrome": "./src/browser-chrome.ts"
   }
 }

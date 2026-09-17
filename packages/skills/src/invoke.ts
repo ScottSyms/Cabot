@@ -3,7 +3,8 @@
 // Execution flows through the same backend + artifact pipeline as
 // python.execute, with the skill's declared packages and network policy
 // enforced before anything runs.
-import { DurableStore, sha256Hex, type BlobStore } from '@cabot/storage';
+import { DurableStore, sha256HexBytes } from '@cabot/storage/browser-chrome';
+import type { BlobStore } from '@cabot/storage';
 import {
   checkPackages,
   persistOutputs,
@@ -82,6 +83,6 @@ export class SkillToolExecutor implements ToolExecutor {
     } catch {
       resultValue = undefined;
     }
-    return { ok: true, resultHash: sha256Hex(new TextEncoder().encode(result.stdout + result.stderr)), result: { result: resultValue, artifacts: artifactIds } };
+    return { ok: true, resultHash: sha256HexBytes(result.stdout + result.stderr), result: { result: resultValue, artifacts: artifactIds } };
   }
 }

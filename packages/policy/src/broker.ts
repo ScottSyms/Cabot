@@ -12,7 +12,7 @@ import type {
   Principal,
   TaskId,
 } from '@cabot/contracts';
-import { DurableStore, newId, nowIso } from '@cabot/storage';
+import { DurableStore, newId, nowIso } from '@cabot/storage/browser-chrome';
 
 export interface ToolRequest {
   toolId: string;

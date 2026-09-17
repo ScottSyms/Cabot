@@ -8,12 +8,12 @@
 // the Node filesystem impl for tests plus an in-memory impl. The DB holds
 // artifact *metadata*; bytes live here. Never one without the other:
 // publish = flush+verify bytes, then commit metadata (see store.ts).
-import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { sha256HexBytes } from './store.js';
 
 export function sha256Hex(bytes: Uint8Array): string {
-  return createHash('sha256').update(bytes).digest('hex');
+  return sha256HexBytes(bytes);
 }
 
 export interface BlobStore {

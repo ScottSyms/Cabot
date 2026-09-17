@@ -5,7 +5,7 @@
 // last checkpoint with no duplicated external effects.
 import type { AgentId, TaskId } from '@cabot/contracts';
 import type { ModelProvider } from '@cabot/providers';
-import { DurableStore } from '@cabot/storage';
+import { DurableStore } from '@cabot/storage/browser-chrome';
 import { CapabilityBroker } from '@cabot/policy';
 
 export interface ToolExecution {
@@ -171,10 +171,12 @@ export async function runUntilSettled(
   taskId: TaskId,
   agentId: AgentId,
   maxTurns = 25,
+  onTurn?: () => void | Promise<void>,
 ): Promise<TurnOutcome> {
   let last: TurnOutcome = { status: 'continue' };
   for (let i = 0; i < maxTurns; i += 1) {
     last = await runAgentTurn(store, broker, model, executor, taskId, agentId);
+    await onTurn?.();
     if (last.status !== 'continue') return last;
   }
   return { status: 'suspended', reason: 'max turns reached' };

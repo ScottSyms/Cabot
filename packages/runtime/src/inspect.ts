@@ -13,7 +13,7 @@ import type {
   TaskEvent,
   TaskId,
 } from '@cabot/contracts';
-import { DurableStore } from '@cabot/storage';
+import { DurableStore } from '@cabot/storage/browser-chrome';
 
 export interface TaskDetail {
   task: Task;

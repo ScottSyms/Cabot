@@ -63,6 +63,30 @@ npm test          # vitest, all packages + integration suites
 npm run typecheck # strict tsc --noEmit
 ```
 
+## Run in Chrome / Edge (preview)
+
+```bash
+npm run build:extension
+```
+
+Then load unpacked:
+
+1. Open `chrome://extensions`, enable Developer mode.
+2. "Load unpacked" → select `apps/extension` (the folder containing
+   `manifest.json`). The bundle lives in `apps/extension/dist` and is
+   git-ignored; rebuild after pulling.
+3. Open the side panel (action click opens it), configure the model
+   provider (Settings: endpoint, model id, optional API key), and run a
+   page summary.
+4. Close and reopen the browser: tasks, sources, and approvals persist via
+   `chrome.storage.local` snapshots reconciled on startup.
+
+Preview scope: read-only research tasks (list/read pages, capture sources).
+Write-path tools, Python/Skills, and MCP are implemented and tested but not
+yet wired into the panel. The Node `vm`/subprocess compute backends are
+development-only and never ship in the bundle (no `node:` imports in
+`dist/`).
+
 Requirements: Node 22+ (`node:sqlite` used for the file-backed durability
 spike; the browser target uses SQLite-WASM + OPFS behind the same SQL and
 `BlobStore` interfaces). `python3` on PATH for the subprocess compute test
