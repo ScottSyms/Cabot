@@ -9,6 +9,8 @@ import { DurableStore } from './store.js';
 export interface SnapshotBackend {
   load(): Promise<string | null>;
   save(snapshot: string): Promise<void>;
+  /** Best-effort side copy (corrupt-snapshot quarantine). Absence is tolerated. */
+  saveBackup?(name: string, snapshot: string): Promise<void>;
 }
 
 export function serializeStore(store: DurableStore): string {
@@ -61,6 +63,7 @@ export function restoreStore(json: string): DurableStore {
 
 export class MemorySnapshotBackend implements SnapshotBackend {
   private snapshot: string | null = null;
+  backups = new Map<string, string>();
   failures = 0;
 
   async load(): Promise<string | null> {
@@ -73,6 +76,10 @@ export class MemorySnapshotBackend implements SnapshotBackend {
       throw new Error('snapshot backend unavailable');
     }
     this.snapshot = snapshot;
+  }
+
+  async saveBackup(name: string, snapshot: string): Promise<void> {
+    this.backups.set(name, snapshot);
   }
 }
 
@@ -100,6 +107,10 @@ export class ChromeStorageBackend implements SnapshotBackend {
 
   async save(snapshot: string): Promise<void> {
     await chromeLocalStorage().set({ [this.key]: snapshot });
+  }
+
+  async saveBackup(name: string, snapshot: string): Promise<void> {
+    await chromeLocalStorage().set({ [`${this.key}.backup.${name}`]: snapshot });
   }
 }
 

@@ -57,8 +57,21 @@ describe('offscreen coordinator', () => {
     expect(listed.tasks).toHaveLength(1);
 
     expect(await coord.handleMessage({ type: 'cabot.ping' })).toEqual({ type: 'cabot.pong' });
+    expect(await coord.handleMessage({ type: 'cabot.boot-warning' })).toEqual({ warning: null });
 
     const agents = (await coord.handleMessage({ type: 'cabot.list-agents' })) as { agents: { id: string; role: string }[] };
     expect(agents.agents.map((a) => a.id)).toContain(agent.id);
+  });
+
+  it('quarantines a corrupt snapshot and boots fresh instead of bricking', async () => {
+    const snapshots = new MemorySnapshotBackend();
+    await snapshots.save('definitely-not-json{{{');
+    const coord = createCoordinator({ snapshots, settings: settings() });
+    await coord.boot(); // must not throw
+    expect(coord.ready().store.tasks.size).toBe(0);
+    expect(coord.bootWarning()).toMatch(/quarantined/);
+    expect(snapshots.backups.size).toBe(1);
+    const listed = (await coord.handleMessage({ type: 'cabot.list-tasks' })) as { tasks: unknown[] };
+    expect(listed.tasks).toHaveLength(0);
   });
 });

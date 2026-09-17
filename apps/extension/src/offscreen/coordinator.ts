@@ -49,6 +49,7 @@ export function chromeSettingsStore(): SettingsStore {
 
 export type CoordinatorMessage =
   | { type: 'cabot.ping' }
+  | { type: 'cabot.boot-warning' }
   | { type: 'cabot.list-tasks' }
   | { type: 'cabot.task-detail'; taskId: string }
   | { type: 'cabot.list-agents' }
@@ -71,14 +72,33 @@ export interface CoordinatorDeps {
 export function createCoordinator(deps: CoordinatorDeps) {
   let store: DurableStore | undefined;
   let broker: CapabilityBroker | undefined;
+  let warning: string | null = null;
 
   async function persist(): Promise<void> {
     if (store) await deps.snapshots.save(serializeStore(store));
   }
 
   async function boot(): Promise<void> {
+    warning = null;
     const raw = await deps.snapshots.load();
-    store = raw ? restoreStore(raw) : new DurableStore();
+    store = new DurableStore();
+    if (raw) {
+      try {
+        store = restoreStore(raw);
+      } catch (e) {
+        // A corrupt snapshot must never brick the runtime forever: quarantine
+        // the payload for inspection and start fresh.
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        try {
+          await deps.snapshots.saveBackup?.(`corrupt-${stamp}`, raw);
+        } catch {
+          // Backup is best-effort; booting fresh matters more.
+        }
+        const cause = e instanceof Error ? e.message : String(e);
+        warning = `stored snapshot unreadable (${cause}); quarantined backup, started fresh`;
+        console.warn(`[cabot] ${warning}`);
+      }
+    }
     store.reconcileAfterRestart();
     broker = new CapabilityBroker(store);
     registerBrowserTools((t) => broker!.registerTool(t));
@@ -175,6 +195,8 @@ export function createCoordinator(deps: CoordinatorDeps) {
     switch (msg.type) {
       case 'cabot.ping':
         return { type: 'cabot.pong' };
+      case 'cabot.boot-warning':
+        return { warning: warning };
       case 'cabot.list-tasks':
         return { tasks: queries.listTasks() };
       case 'cabot.task-detail':
@@ -219,5 +241,5 @@ export function createCoordinator(deps: CoordinatorDeps) {
     }
   }
 
-  return { boot, reboot, persist, runSummary, handleMessage, ready };
+  return { boot, reboot, persist, runSummary, handleMessage, ready, bootWarning: () => warning };
 }

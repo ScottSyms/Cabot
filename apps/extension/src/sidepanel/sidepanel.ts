@@ -71,11 +71,13 @@ export function renderSidePanel(root: HTMLElement, client: PanelClient): { refre
 
   async function refresh(): Promise<void> {
     try {
-      const [tasks, approvals, agents] = await Promise.all([
+      const [tasks, approvals, agents, boot] = await Promise.all([
         checked(client.send<{ tasks: TaskSummary[] }>({ type: 'cabot.list-tasks' })),
         checked(client.send<{ approvals: ApprovalInboxItem[] }>({ type: 'cabot.pending-approvals' })),
         checked(client.send<{ agents: Agent[] }>({ type: 'cabot.list-agents' })),
+        checked(client.send<{ warning: string | null }>({ type: 'cabot.boot-warning' })),
       ]);
+      if (boot.warning) setStatus(`notice: ${boot.warning}`);
       renderStats(tasks.tasks, approvals.approvals);
       renderTaskList(tasks.tasks);
       renderApprovals(approvals.approvals);
