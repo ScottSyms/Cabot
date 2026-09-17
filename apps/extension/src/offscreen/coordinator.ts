@@ -48,6 +48,7 @@ export function chromeSettingsStore(): SettingsStore {
 }
 
 export type CoordinatorMessage =
+  | { type: 'cabot.ping' }
   | { type: 'cabot.list-tasks' }
   | { type: 'cabot.task-detail'; taskId: string }
   | { type: 'cabot.list-agents' }
@@ -172,6 +173,8 @@ export function createCoordinator(deps: CoordinatorDeps) {
     // Lightweight service for read-only queries (no model needed).
     const queries = queryService();
     switch (msg.type) {
+      case 'cabot.ping':
+        return { type: 'cabot.pong' };
       case 'cabot.list-tasks':
         return { tasks: queries.listTasks() };
       case 'cabot.task-detail':

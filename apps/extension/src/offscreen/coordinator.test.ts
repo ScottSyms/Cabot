@@ -56,6 +56,8 @@ describe('offscreen coordinator', () => {
     const listed = (await coord.handleMessage({ type: 'cabot.list-tasks' })) as { tasks: unknown[] };
     expect(listed.tasks).toHaveLength(1);
 
+    expect(await coord.handleMessage({ type: 'cabot.ping' })).toEqual({ type: 'cabot.pong' });
+
     const agents = (await coord.handleMessage({ type: 'cabot.list-agents' })) as { agents: { id: string; role: string }[] };
     expect(agents.agents.map((a) => a.id)).toContain(agent.id);
   });

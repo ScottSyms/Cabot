@@ -28,6 +28,15 @@ function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** Reject empty or error responses so UI code never destructures null. */
+async function checked<T>(p: Promise<T>): Promise<Exclude<T, null | undefined>> {
+  const res = await p;
+  if (!res || typeof res !== 'object' || 'error' in (res as Record<string, unknown>)) {
+    throw new Error((res as { error?: string } | null)?.error ?? 'runtime returned an empty response');
+  }
+  return res as Exclude<T, null | undefined>;
+}
+
 export function renderSidePanel(root: HTMLElement, client: PanelClient): { refresh: () => Promise<void> } {
   root.innerHTML = '';
   const wrap = el('div', undefined, { id: 'cabot' });
@@ -63,9 +72,9 @@ export function renderSidePanel(root: HTMLElement, client: PanelClient): { refre
   async function refresh(): Promise<void> {
     try {
       const [tasks, approvals, agents] = await Promise.all([
-        client.send<{ tasks: TaskSummary[] }>({ type: 'cabot.list-tasks' }),
-        client.send<{ approvals: ApprovalInboxItem[] }>({ type: 'cabot.pending-approvals' }),
-        client.send<{ agents: Agent[] }>({ type: 'cabot.list-agents' }),
+        checked(client.send<{ tasks: TaskSummary[] }>({ type: 'cabot.list-tasks' })),
+        checked(client.send<{ approvals: ApprovalInboxItem[] }>({ type: 'cabot.pending-approvals' })),
+        checked(client.send<{ agents: Agent[] }>({ type: 'cabot.list-agents' })),
       ]);
       renderStats(tasks.tasks, approvals.approvals);
       renderTaskList(tasks.tasks);
@@ -157,7 +166,7 @@ export function renderSidePanel(root: HTMLElement, client: PanelClient): { refre
   }
 
   async function showDetail(taskId: string): Promise<void> {
-    const { detail } = await client.send<{ detail: TaskDetail }>({ type: 'cabot.task-detail', taskId });
+    const { detail } = await checked(client.send<{ detail: TaskDetail }>({ type: 'cabot.task-detail', taskId }));
     detailBody.innerHTML = '';
     detailBody.append(el('h4', `${detail.task.title || '(untitled)'} `));
     detailBody.append(el('div', `Status: ${detail.task.status} · checkpoint r${detail.task.checkpointRevision}`, { class: 'muted' }));
@@ -193,8 +202,7 @@ export function renderSidePanel(root: HTMLElement, client: PanelClient): { refre
       if (!text.trim()) return;
       send.disabled = true;
       setStatus('sending…');
-      client
-        .send<{ outcome: { status: string } }>({ type: 'cabot.send-message', taskId, text })
+      checked(client.send<{ outcome: { status: string } }>({ type: 'cabot.send-message', taskId, text }))
         .then(({ outcome }) => {
           setStatus(`agent replied: ${outcome.status}`);
           msgInput.value = '';
@@ -276,11 +284,12 @@ function buildRunner(client: PanelClient, after: () => void): HTMLElement {
     run.disabled = true;
     const st = document.getElementById('cabot-status');
     if (st) st.textContent = 'running…';
-    client
-      .send<{ taskId: string; outcome: { status: string } }>({
+    checked(
+      client.send<{ taskId: string; outcome: { status: string } }>({
         type: 'cabot.run-summary',
         objective: input.value || 'Summarize the active tab',
-      })
+      }),
+    )
       .then(({ taskId, outcome }) => {
         if (st) st.textContent = `done: ${taskId} → ${outcome.status}`;
         after();

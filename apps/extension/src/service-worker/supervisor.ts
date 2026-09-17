@@ -38,8 +38,30 @@ export function createSupervisor(deps: SupervisorDeps) {
 
   async function ensureRuntime(): Promise<void> {
     // Supervisor never executes agent turns itself; it guarantees the
-    // offscreen coordinator exists, then steps aside.
+    // offscreen coordinator exists and answers, then steps aside.
     await deps.ensureOffscreenDocument();
+    await waitForCoordinator();
+  }
+
+  /** Readiness handshake: the document exists but its module may still boot. */
+  async function waitForCoordinator(attempts = 20, delayMs = 250): Promise<void> {
+    const g = globalThis as unknown as {
+      chrome?: { runtime?: { sendMessage(msg: unknown): Promise<unknown> } };
+    };
+    const send = g.chrome?.runtime?.sendMessage;
+    if (!send) throw new Error('chrome.runtime messaging unavailable');
+    let lastError = 'no response';
+    for (let i = 0; i < attempts; i += 1) {
+      try {
+        const res = (await send({ type: 'cabot.ping', via: 'supervisor' })) as { type?: string; error?: string } | null | undefined;
+        if (res?.type === 'cabot.pong') return;
+        lastError = res?.error ?? 'empty response';
+      } catch (e) {
+        lastError = e instanceof Error ? e.message : String(e);
+      }
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+    throw new Error(`Cabot runtime not ready after ${attempts * delayMs}ms: ${lastError}`);
   }
 
   /** Forward UI intent to the offscreen coordinator via runtime messaging. */
@@ -49,7 +71,11 @@ export function createSupervisor(deps: SupervisorDeps) {
       chrome?: { runtime?: { sendMessage(msg: unknown): Promise<unknown> } };
     };
     if (!g.chrome?.runtime?.sendMessage) throw new Error('chrome.runtime messaging unavailable');
-    return g.chrome.runtime.sendMessage({ ...msg as Record<string, unknown>, via: 'supervisor' });
+    const res = await g.chrome.runtime.sendMessage({ ...(msg as Record<string, unknown>), via: 'supervisor' });
+    if (!res || typeof res !== 'object' || 'error' in (res as Record<string, unknown>)) {
+      throw new Error((res as { error?: string } | null)?.error ?? 'runtime returned an empty response');
+    }
+    return res;
   }
 
   async function onMessage(msg: unknown): Promise<unknown> {
@@ -92,7 +118,9 @@ export function wireExtensionRuntime(): void {
     });
 
     chrome.runtime.onMessage.addListener((msg, _sender, respond) => {
-      void supervisor.onMessage(msg).then(respond);
+      void supervisor
+        .onMessage(msg)
+        .then(respond, (e: unknown) => respond({ error: e instanceof Error ? e.message : String(e) }));
       return true;
     });
     chrome.alarms.create(REHYDRATE_ALARM, { periodInMinutes: 5 });

@@ -22,6 +22,15 @@ describe('supervisor', () => {
 
     let offscreenEnsured = 0;
     const notified: unknown[] = [];
+    // Fake chrome.runtime messaging: answer readiness pings like offscreen.
+    const g = globalThis as unknown as { chrome?: { runtime?: { sendMessage(m: unknown): Promise<unknown> } } };
+    g.chrome = {
+      runtime: {
+        sendMessage: async (m: unknown) =>
+          (m as { type?: string }).type === 'cabot.ping' ? { type: 'cabot.pong' } : { ok: true },
+      },
+    };
+    try {
     const sup = createSupervisor({
       snapshots,
       ensureOffscreenDocument: async () => {
@@ -48,5 +57,26 @@ describe('supervisor', () => {
     // Non-terminal task reconciled to INTERRUPTED on load.
     expect(rehydrated.tasks.get(task.id)?.status).toBe('INTERRUPTED');
     expect(await sup.onMessage({ type: 'cabot.ping' })).toEqual({ type: 'cabot.pong' });
+    // Unknown runtime messages forward to the coordinator stub.
+    expect(await sup.onMessage({ type: 'cabot.list-tasks' })).toEqual({ ok: true });
+    } finally {
+      delete g.chrome;
+    }
+  });
+
+  it('reports a clear error when the coordinator never answers', async () => {
+    const snapshots = new MemorySnapshotBackend();
+    const g = globalThis as unknown as { chrome?: { runtime?: { sendMessage(m: unknown): Promise<unknown> } } };
+    g.chrome = { runtime: { sendMessage: async () => null } };
+    try {
+      const sup = createSupervisor({
+        snapshots,
+        ensureOffscreenDocument: async () => {},
+        notifyClients: () => {},
+      });
+      await expect(sup.onMessage({ type: 'cabot.list-tasks' })).rejects.toThrow(/empty response/);
+    } finally {
+      delete g.chrome;
+    }
   });
 });
