@@ -236,12 +236,16 @@ export function createCoordinator(deps: CoordinatorDeps) {
     if (!project) throw new Error('project missing for task');
     const executor = new BrowserToolExecutor(deps.browserBackend, s, task.id, project.id);
     const svc = new CabotRuntimeService(s, b, provider, executor);
-    const outcome = await svc.runTask(task.id, task.ownerAgentId, 25, () => {
-      // Per-turn: persist, then tell UIs to refresh (selection, drafts,
-      // and scroll are preserved panel-side).
-      emit('task-progress', task.id);
-      return persist().catch(() => {});
-    });
+    // Hold the task lock for the whole run so cancel/send can tell whether a
+    // loop is actually in flight.
+    const outcome = await runs.runExclusive(task.id, () =>
+      svc.runTask(task.id, task.ownerAgentId, 25, () => {
+        // Per-turn: persist, then tell UIs to refresh (selection, drafts,
+        // and scroll are preserved panel-side).
+        emit('task-progress', task.id);
+        return persist().catch(() => {});
+      }),
+    );
     await persist();
     const status = (outcome as { status: string }).status;
     emit(status === 'approval-required' ? 'approval-requested' : `task-${status}`, task.id, { outcome });
@@ -269,10 +273,12 @@ export function createCoordinator(deps: CoordinatorDeps) {
     const executor = new BrowserToolExecutor(deps.browserBackend, s, task.id, project.id);
     const svc = new CabotRuntimeService(s, b, provider, executor);
     await persist();
-    const outcome = await svc.runTask(task.id, agent.id, 25, () => {
-      emit('task-progress', task.id);
-      return persist().catch(() => {});
-    });
+    const outcome = await runs.runExclusive(task.id, () =>
+      svc.runTask(task.id, agent.id, 25, () => {
+        emit('task-progress', task.id);
+        return persist().catch(() => {});
+      }),
+    );
     await persist();
     const done = (outcome as { status: string }).status;
     emit(done === 'approval-required' ? 'approval-requested' : `task-${done}`, task.id, { outcome });
@@ -315,12 +321,19 @@ export function createCoordinator(deps: CoordinatorDeps) {
         queries.resumeTask(msg.taskId);
         await persist();
         return { ok: true };
-      case 'cabot.cancel-task':
-        queries.cancelTask(msg.taskId);
+      case 'cabot.cancel-task': {
+        // A running loop observes a cooperative request at the next turn
+        // boundary. With no loop in flight nobody would ever observe it, so
+        // cancel directly and let the task/agent move to history.
+        const cooperative = runs.isRunning(msg.taskId);
+        if (cooperative) queries.cancelTask(msg.taskId);
+        else queries.cancelTaskNow(msg.taskId);
         await persist();
-        return { ok: true };
+        emit('task-cancelled', msg.taskId, { cooperative });
+        return { ok: true, cooperative };
+      }
       case 'cabot.run-summary':
-        // Each run creates its own task, so no lock needed here.
+        // Each run creates its own task; the lock is taken inside runSummary.
         return runSummary(msg.objective, msg.projectName);
       case 'cabot.send-message': {
         queries.sendUserMessage(msg.taskId, msg.text);
@@ -331,10 +344,10 @@ export function createCoordinator(deps: CoordinatorDeps) {
           emit('user-message-queued', msg.taskId);
           return { taskId: msg.taskId, queued: true as const };
         }
-        return runs.runExclusive(msg.taskId, async () => ({
+        return {
           taskId: msg.taskId,
           ...(await continueTask(msg.taskId) as Record<string, unknown>),
-        }));
+        };
       }
       case 'cabot.get-settings': {
         const s = await deps.settings.load();

@@ -177,3 +177,36 @@ describe('agent removal', () => {
     expect(coord.ready().store.agents.has(agent.id)).toBe(false);
   });
 });
+
+describe('cancel routing', () => {
+  async function seedRunningAgent(coord: ReturnType<typeof createCoordinator>) {
+    const s = coord.ready().store;
+    const project = s.createProject('P');
+    const agent = s.createAgent({
+      projectId: project.id, role: 'r', objective: 'o', status: 'RUNNING',
+      modelConfig: { providerId: 'x', modelId: 'y' }, skillIds: [], budget: {}, workspaceMounts: [], delegationDepth: 0,
+    });
+    const task = s.createTask({ projectId: project.id, ownerAgentId: agent.id, title: 'T', objective: 'O' });
+    s.transitionTask(task.id, 'READY', 'r');
+    s.transitionTask(task.id, 'RUNNING', 'r');
+    await coord.persist();
+    return { agent, task };
+  }
+
+  it('cancels a stalled task directly so it can move to history', async () => {
+    const snapshots = new MemorySnapshotBackend();
+    const coord = createCoordinator({ snapshots, settings: settings(), browserBackend: new FakeBrowserBackend() });
+    await coord.boot();
+    const { agent, task } = await seedRunningAgent(coord);
+    // No loop is in flight.
+    const res = (await coord.handleMessage({ type: 'cabot.cancel-task', taskId: task.id })) as { cooperative: boolean };
+    expect(res.cooperative).toBe(false);
+    expect(coord.ready().store.tasks.get(task.id)?.status).toBe('CANCELLED');
+    expect(coord.ready().store.agents.get(agent.id)?.status).toBe('CANCELLED');
+
+    // And it is now removable from history.
+    const removed = (await coord.handleMessage({ type: 'cabot.remove-agent', agentId: agent.id })) as { ok: boolean };
+    expect(removed.ok).toBe(true);
+    expect(coord.ready().store.agents.has(agent.id)).toBe(false);
+  });
+});

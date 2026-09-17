@@ -220,3 +220,32 @@ describe('agent status sync', () => {
     expect(store.agents.get(agent.id)?.status).toBe('CANCELLED');
   });
 });
+
+describe('cancel with no loop in flight', () => {
+  it('cancelTaskNow cancels a stalled RUNNING task and syncs the agent', () => {
+    const { store, agent, task, svc } = (() => {
+      const s = setup();
+      const svc = new CabotRuntimeService(s.store, s.broker, new FakeModelProvider(), { execute: async () => ({ ok: true }) });
+      return { ...s, svc };
+    })();
+    // Simulate a run that returned without transitioning the task
+    // (e.g. max-turns suspension): task RUNNING, no loop alive.
+    expect(store.tasks.get(task.id)?.status).toBe('RUNNING');
+    expect(store.agents.get(agent.id)?.status).toBe('RUNNING');
+    svc.cancelTaskNow(task.id);
+    expect(store.tasks.get(task.id)?.status).toBe('CANCELLED');
+    expect(store.agents.get(agent.id)?.status).toBe('CANCELLED');
+  });
+
+  it('cancelTaskNow is a no-op on terminal tasks', () => {
+    const { store, agent, task, svc } = (() => {
+      const s = setup();
+      const svc = new CabotRuntimeService(s.store, s.broker, new FakeModelProvider(), { execute: async () => ({ ok: true }) });
+      return { ...s, svc };
+    })();
+    store.transitionTask(task.id, 'CANCELLED', 'c');
+    store.setAgentStatus(agent.id, 'CANCELLED');
+    svc.cancelTaskNow(task.id);
+    expect(store.tasks.get(task.id)?.status).toBe('CANCELLED');
+  });
+});

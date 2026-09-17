@@ -88,6 +88,27 @@ export class CabotRuntimeService {
     this.store.commitCheckpoint(taskId);
   }
 
+  /**
+   * Cancel immediately, for when no loop is in flight to observe a request
+   * (e.g. the run already returned but the task stayed non-terminal). Safe
+   * against a live loop too: the loop re-reads task status each turn and
+   * exits when it sees CANCELLED.
+   */
+  cancelTaskNow(taskId: TaskId): void {
+    const t = this.store.tasks.get(taskId);
+    if (!t) throw new Error(`unknown task ${taskId}`);
+    if (['COMPLETE', 'FAILED', 'CANCELLED'].includes(t.status)) return;
+    try {
+      this.store.transitionTask(taskId, 'CANCELLED', 'cancelled by user');
+    } catch {
+      // States without a direct CANCELLED transition (e.g. CHECKPOINTING):
+      // fall back to a request that recovery will settle.
+      this.store.appendEvent(taskId, 'task.cancel-requested', 'cancel requested by user');
+      this.store.commitCheckpoint(taskId);
+    }
+    syncAgentToTask(this.store, taskId, t.ownerAgentId);
+  }
+
   inspectTask(taskId: TaskId): Task {
     const t = this.store.tasks.get(taskId);
     if (!t) throw new Error(`unknown task ${taskId}`);
