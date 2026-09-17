@@ -88,7 +88,7 @@ describe('openai-compatible provider', () => {
       throw new TypeError('Failed to fetch');
     });
     const provider = new OpenAICompatibleProvider({ endpoint: 'https://openrouter.ai/api/v1', modelId: 'm' });
-    await expect(provider.decide(baseRequest)).rejects.toThrow(/unreachable.*openrouter.*host permissions/);
+    await expect(provider.decide(baseRequest)).rejects.toThrow(/unreachable.*openrouter.*permits this host/);
   });
 
   it('rejects unparseable tool arguments instead of dispatching', async () => {
