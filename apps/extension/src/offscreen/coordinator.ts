@@ -50,6 +50,8 @@ export function chromeSettingsStore(): SettingsStore {
 export type CoordinatorMessage =
   | { type: 'cabot.list-tasks' }
   | { type: 'cabot.task-detail'; taskId: string }
+  | { type: 'cabot.list-agents' }
+  | { type: 'cabot.agent-detail'; agentId: string }
   | { type: 'cabot.pending-approvals' }
   | { type: 'cabot.decide-approval'; approvalId: string; decision: 'granted' | 'denied' }
   | { type: 'cabot.pause-task'; taskId: string }
@@ -143,6 +145,10 @@ export function createCoordinator(deps: CoordinatorDeps) {
         return { tasks: queries.listTasks() };
       case 'cabot.task-detail':
         return { detail: queries.getTaskDetail(msg.taskId) };
+      case 'cabot.list-agents':
+        return { agents: queries.listAgents() };
+      case 'cabot.agent-detail':
+        return { agent: queries.inspectAgent(msg.agentId) };
       case 'cabot.pending-approvals':
         return { approvals: queries.listPendingApprovals() };
       case 'cabot.decide-approval':

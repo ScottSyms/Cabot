@@ -3,7 +3,7 @@
 // and provider settings. Contains no agent logic, no tool dispatch, no
 // model calls — everything goes through the supervisor → coordinator.
 import './sidepanel.css';
-import type { ApprovalInboxItem, TaskDetail } from '@cabot/runtime';
+import type { Agent, ApprovalInboxItem, TaskDetail } from '@cabot/runtime';
 
 export interface PanelClient {
   send<T>(msg: unknown): Promise<T>;
@@ -39,6 +39,7 @@ export function renderSidePanel(root: HTMLElement, client: PanelClient): void {
   const settingsBody = buildSettings(client);
   const runnerBody = buildRunner(client, () => refresh());
   const tasksBody = el('div', undefined, { id: 'cabot-tasks' });
+  const agentsBody = el('div', undefined, { id: 'cabot-agents' });
   const approvalsBody = el('div', undefined, { id: 'cabot-approvals' });
   const detailBody = el('div', undefined, { id: 'cabot-detail' });
 
@@ -49,6 +50,7 @@ export function renderSidePanel(root: HTMLElement, client: PanelClient): void {
     section('New page summary', runnerBody, true),
     section('Approvals', approvalsBody, true, 'approvals'),
     section('Tasks', tasksBody, true),
+    section('Agents', agentsBody, true),
     section('Task detail', detailBody, false),
     section('Provider settings', settingsBody, false),
   );
@@ -60,13 +62,15 @@ export function renderSidePanel(root: HTMLElement, client: PanelClient): void {
 
   async function refresh(): Promise<void> {
     try {
-      const [tasks, approvals] = await Promise.all([
+      const [tasks, approvals, agents] = await Promise.all([
         client.send<{ tasks: TaskSummary[] }>({ type: 'cabot.list-tasks' }),
         client.send<{ approvals: ApprovalInboxItem[] }>({ type: 'cabot.pending-approvals' }),
+        client.send<{ agents: Agent[] }>({ type: 'cabot.list-agents' }),
       ]);
       renderStats(tasks.tasks, approvals.approvals);
       renderTaskList(tasks.tasks);
       renderApprovals(approvals.approvals);
+      renderAgents(agents.agents);
     } catch (e) {
       setStatus(`refresh failed: ${errorText(e)}`);
     }
@@ -106,8 +110,25 @@ export function renderSidePanel(root: HTMLElement, client: PanelClient): void {
     }
   }
 
-  function renderApprovals(items: ApprovalInboxItem[]): void {
-    approvalsBody.innerHTML = '';
+  function renderAgents(agents: Agent[]): void {
+    agentsBody.innerHTML = '';
+    if (agents.length === 0) agentsBody.append(el('p', 'No agents yet. Each summary run creates one.', { class: 'muted' }));
+    for (const a of agents.slice().reverse()) {
+      const row = el('div', undefined, { class: 'task' });
+      const title = el('div');
+      title.append(el('strong', `${a.role} `));
+      title.append(el('span', a.status, { class: `status status-${a.status}` }));
+      const meta = el('div', undefined, { class: 'muted mono' });
+      const spent = `model ${a.spent.modelCalls} · tools ${a.spent.toolCalls}`;
+      const parent = a.parentAgentId ? ` · child of ${a.parentAgentId.slice(0, 12)}…` : '';
+      const skills = a.skillIds.length > 0 ? ` · skills: ${a.skillIds.join(', ')}` : '';
+      meta.textContent = `${a.id.slice(0, 14)}… · ${spent}${parent}${skills}`;
+      row.append(title, meta);
+      agentsBody.append(row);
+    }
+  }
+
+  function renderApprovals(items: ApprovalInboxItem[]): void {    approvalsBody.innerHTML = '';
     if (items.length === 0) approvalsBody.append(el('p', 'Nothing waiting.', { class: 'muted' }));
     for (const a of items) {
       const row = el('div', undefined, { class: 'approval' });

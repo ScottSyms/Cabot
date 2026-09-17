@@ -98,6 +98,12 @@ export class CabotRuntimeService {
     return { ...a, spent: { ...a.spent } };
   }
 
+  listAgents(projectId?: ProjectId): Agent[] {
+    return [...this.store.agents.values()]
+      .filter((a) => !projectId || a.projectId === projectId)
+      .map((a) => ({ ...a, spent: { ...a.spent } }));
+  }
+
   // ---- inspection (read-only; feeds side panel + dashboard) ----
 
   getTaskDetail(taskId: TaskId, eventLimit = 50): TaskDetail {
