@@ -176,3 +176,21 @@ describe('budget guidance', () => {
     expect(sent.messages[0].content).not.toContain('Budget:');
   });
 });
+
+describe('tool result context', () => {
+  it('renders prior tool outputs as messages the model can use', async () => {
+    const { calls } = stubFetch({ choices: [{ message: { content: 'done' }, finish_reason: 'stop' }] });
+    const provider = new OpenAICompatibleProvider({ endpoint: 'http://localhost:11434/v1', modelId: 'm' });
+    await provider.decide({
+      ...baseRequest,
+      recentToolResults: [
+        { toolId: 'browser.get_active_tab', ok: true, result: '{"id":"t1","url":"https://example.com"}' },
+        { toolId: 'browser.read_page', ok: false, result: 'Cannot access chrome:// pages' },
+      ],
+    });
+    const sent = JSON.parse(calls[0].init.body as string) as { messages: { role: string; content: string }[] };
+    const joined = sent.messages.map((m) => m.content).join('\n');
+    expect(joined).toContain('[tool result: browser.get_active_tab ok] {"id":"t1"');
+    expect(joined).toContain('[tool result: browser.read_page failed] Cannot access chrome:// pages');
+  });
+});

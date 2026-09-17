@@ -110,6 +110,7 @@ export function renderConversation(container: HTMLElement, conversation: Convers
       container.append(b);
     } else {
       const chip = el('div', undefined, { class: `chip${m.ok === false ? ' chip-bad' : ''}` });
+      if (m.result) chip.setAttribute('title', m.result.slice(0, 1200));
       chip.append(el('span', m.ok === false ? '✗' : '✓', { class: 'chip-mark' }));
       chip.append(el('span', m.toolId ?? 'tool', { class: 'mono' }));
       if (m.ok === false && m.text) chip.append(el('span', m.text, { class: 'chip-err' }));

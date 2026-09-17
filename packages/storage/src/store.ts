@@ -115,6 +115,8 @@ export class StoreError extends Error {}
 
 export const CONVERSATION_PER_TASK_CAP = 500;
 export const CONVERSATION_GLOBAL_CAP = 5000;
+/** Tool outputs are truncated to keep snapshot size and model context bounded. */
+export const CONVERSATION_RESULT_CAP = 4000;
 
 export class DurableStore {
   projects = new Map<string, Project>();
@@ -258,7 +260,7 @@ export class DurableStore {
     agentId: AgentId,
     role: ConversationRole,
     text: string,
-    extra?: { toolId?: string; ok?: boolean },
+    extra?: { toolId?: string; ok?: boolean; result?: string },
   ): ConversationMessage {
     const msg: ConversationMessage = {
       id: newId('cmsg'),
@@ -268,6 +270,7 @@ export class DurableStore {
       text: text.slice(0, 8000),
       toolId: extra?.toolId,
       ok: extra?.ok,
+      result: extra?.result?.slice(0, CONVERSATION_RESULT_CAP),
       createdAt: nowIso(),
     };
     this.conversation.push(msg);

@@ -22,6 +22,8 @@ export interface ModelRequest {
   recentEvents: { type: string; summary: string }[];
   /** Recent user/agent transcript (capped by the caller). */
   recentConversation?: { role: 'user' | 'agent'; text: string }[];
+  /** Recent tool outputs, without which the model cannot act on its results. */
+  recentToolResults?: { toolId: string; ok: boolean; result: string }[];
   /** Remaining budget so the model can pace itself and conclude in time. */
   budget?: BudgetStatus;
 }

@@ -50,6 +50,10 @@ export class OpenAICompatibleProvider implements ModelProvider {
           role: m.role === 'agent' ? ('assistant' as const) : ('user' as const),
           content: m.text,
         })),
+        ...(request.recentToolResults ?? []).map((r) => ({
+          role: 'user' as const,
+          content: `[tool result: ${r.toolId} ${r.ok ? 'ok' : 'failed'}] ${r.result || '(no output)'}`.slice(0, 4200),
+        })),
         ...request.recentEvents.map((e) => ({ role: 'user' as const, content: `[${e.type}] ${e.summary}` })),
       ],
       tools: request.tools.map((t) => ({

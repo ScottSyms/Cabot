@@ -74,6 +74,17 @@ export const SAFETY_PREAMBLE =
 
 export const MAX_IDENTICAL_ACTIONS = 3;
 
+/** Serialize a tool result for the transcript; returns undefined if empty. */
+export function serializeToolResult(result: unknown): string | undefined {
+  if (result === undefined || result === null) return undefined;
+  if (typeof result === 'string') return result;
+  try {
+    return JSON.stringify(result);
+  } catch {
+    return '[unserializable result]';
+  }
+}
+
 export function effectiveSystemPolicy(userPrompt?: string): string {
   const extra = userPrompt?.trim();
   return extra ? `${SAFETY_PREAMBLE}\n\nOperator instructions:\n${extra}` : SAFETY_PREAMBLE;
@@ -140,6 +151,14 @@ export async function runAgentTurn(
     .forTaskConversation(taskId, 20)
     .filter((m) => m.role !== 'tool')
     .map((m) => ({ role: m.role as 'user' | 'agent', text: m.text }));
+  // Tool outputs must reach the model or it cannot act on them (it would just
+  // retry the same call). Only the operational tool events are dropped from
+  // recentEvents, since the results below carry that information.
+  const recentToolResults = store
+    .forTaskConversation(taskId, 60)
+    .filter((m) => m.role === 'tool')
+    .slice(-8)
+    .map((m) => ({ toolId: m.toolId ?? 'tool', ok: m.ok !== false, result: m.result ?? '' }));
   store.appendEvent(taskId, 'model.requested', `agent ${agentId} requests decision`);
   store.setAgentStatus(agentId, 'WAITING_FOR_MODEL');
   let response: ModelResponse;
@@ -151,8 +170,11 @@ export async function runAgentTurn(
       objective: task.objective,
       planRevision: task.planRevision,
       tools: [...broker.tools.values()].map((t) => ({ id: t.id, description: t.description })),
-      recentEvents: recentEvents.map((e) => ({ type: e.type, summary: e.summary })),
+      recentEvents: recentEvents
+        .filter((e) => !['tool.requested', 'tool.started', 'tool.completed', 'tool.failed'].includes(e.type))
+        .map((e) => ({ type: e.type, summary: e.summary })),
       recentConversation,
+      recentToolResults,
       budget: {
         modelCallsLimit: agent.budget.maxModelCalls,
         modelCallsUsed: agent.spent.modelCalls,
@@ -297,10 +319,18 @@ export async function runAgentTurn(
     const exec = await executor.execute(action.toolId, action.args);
     if (exec.ok) {
       store.settleOperation(op.id, 'SUCCEEDED', { resultHash: exec.resultHash });
-      store.appendConversation(taskId, agentId, 'tool', `${action.toolId} — succeeded`, { toolId: action.toolId, ok: true });
+      store.appendConversation(taskId, agentId, 'tool', `${action.toolId} — succeeded`, {
+        toolId: action.toolId,
+        ok: true,
+        result: serializeToolResult(exec.result),
+      });
     } else {
       store.settleOperation(op.id, 'FAILED', { error: exec.error });
-      store.appendConversation(taskId, agentId, 'tool', `${action.toolId} — failed: ${exec.error ?? 'unknown error'}`, { toolId: action.toolId, ok: false });
+      store.appendConversation(taskId, agentId, 'tool', `${action.toolId} — failed: ${exec.error ?? 'unknown error'}`, {
+        toolId: action.toolId,
+        ok: false,
+        result: exec.error,
+      });
     }
   } catch (e) {
     // Executor threw without a result: crash-equivalent. Leave DISPATCHED so

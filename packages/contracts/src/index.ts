@@ -204,6 +204,8 @@ export interface ConversationMessage {
   text: string;
   toolId?: string;
   ok?: boolean;
+  /** Serialized tool output (capped) so the model can see what a tool returned. */
+  result?: string;
   createdAt: ISODateString;
 }
 

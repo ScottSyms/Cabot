@@ -396,3 +396,48 @@ describe('stuck-agent detection', () => {
     expect((await svc.runTask(task.id, agent.id, 10)).status).toBe('complete');
   });
 });
+
+describe('tool results reach the model', () => {
+  it('passes prior tool output into the next turn so the agent can proceed', async () => {
+    const { store, broker, agent, task } = setup();
+    const seen: (string | undefined)[] = [];
+    let turn = 0;
+    const model = {
+      id: 'spy',
+      listModels: async () => [],
+      decide: async (req: Parameters<FakeModelProvider['decide']>[0]) => {
+        seen.push(req.recentToolResults?.[0]?.result);
+        turn += 1;
+        if (turn === 1) {
+          return { action: { kind: 'tool' as const, toolId: 'notes.write', args: { step: 1 }, argsHash: 'a', idempotencyKey: 'k1' } };
+        }
+        return { action: { kind: 'done' as const, summary: 'used the result' } };
+      },
+    };
+    const executor: ToolExecutor = {
+      execute: async () => ({ ok: true, resultHash: 'r', result: { tabs: ['t1', 't2'] } }),
+    };
+    const svc = new CabotRuntimeService(store, broker, model, executor);
+    expect((await svc.runTask(task.id, agent.id, 5)).status).toBe('complete');
+    // Turn 1 has no result yet; turn 2 must carry the tool output.
+    expect(seen[0]).toBeUndefined();
+    expect(seen[1]).toBe('{"tabs":["t1","t2"]}');
+    const toolMsg = store.forTaskConversation(task.id).find((m) => m.role === 'tool');
+    expect(toolMsg?.result).toBe('{"tabs":["t1","t2"]}');
+  });
+
+  it('records the error text on failed tool calls', async () => {
+    const { store, broker, agent, task } = setup();
+    const model = new FakeModelProvider();
+    model.script(task.id, [
+      { kind: 'tool', toolId: 'notes.write', args: {}, argsHash: 'a', idempotencyKey: 'k1' },
+      { kind: 'done', summary: 'ok' },
+    ]);
+    const svc = new CabotRuntimeService(store, broker, model, {
+      execute: async () => ({ ok: false, error: 'scripting denied on this tab' }),
+    });
+    await svc.runTask(task.id, agent.id, 5);
+    const toolMsg = store.forTaskConversation(task.id).find((m) => m.role === 'tool');
+    expect(toolMsg).toMatchObject({ ok: false, result: 'scripting denied on this tab' });
+  });
+});
