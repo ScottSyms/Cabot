@@ -25,6 +25,7 @@
       "@cabot/runtime": ["packages/runtime/src/index.ts"],
       "@cabot/tools": ["packages/tools/src/index.ts"],
       "@cabot/compute": ["packages/compute/src/index.ts"],
+      "@cabot/skills": ["packages/skills/src/index.ts"],
       "@cabot/providers": ["packages/providers/src/index.ts"]
     }
   }

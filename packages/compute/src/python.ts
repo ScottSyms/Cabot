@@ -81,6 +81,39 @@ export function checkPackages(policy: PackagePolicy, requested: string[]): { all
   return { allowed: true, reason: 'packages approved' };
 }
 
+/** Persist backend outputs as verified artifacts; shared by code and Skill entrypoints. */
+export function persistOutputs(
+  blobs: BlobStore,
+  store: DurableStore,
+  ctx: { taskId: string; projectId: string; agentId: string; prefix: string },
+  outputs: Record<string, Uint8Array>,
+  declared: string[],
+): string[] {
+  const artifactIds: string[] = [];
+  for (const name of declared) {
+    const bytes = outputs[name];
+    if (!bytes) continue;
+    const id = `${ctx.prefix}_${ctx.taskId}_${name.replace(/[^A-Za-z0-9_.-]/g, '_')}`;
+    const hash = sha256Hex(bytes);
+    blobs.writeStaged(id, bytes);
+    blobs.publish(id, bytes.length, hash);
+    const meta = store.stageArtifact({
+      projectId: ctx.projectId,
+      taskId: ctx.taskId,
+      agentId: ctx.agentId,
+      path: `outputs/${name}`,
+      bytes: bytes.length,
+      sha256: hash,
+    });
+    // Align metadata id with blob id for durable cross-reference.
+    store.artifacts.delete(meta.id);
+    store.artifacts.set(id, { ...meta, id });
+    store.publishArtifact(id, bytes.length, hash);
+    artifactIds.push(id);
+  }
+  return artifactIds;
+}
+
 export class PythonToolExecutor implements ToolExecutor {
   constructor(
     private backend: PythonBackend,
@@ -121,29 +154,13 @@ export class PythonToolExecutor implements ToolExecutor {
     }
     // Persist declared outputs as verified artifacts: blob first, then metadata.
     const declared = a.outputs ?? Object.keys(result.outputs);
-    const artifactIds: string[] = [];
-    for (const name of declared) {
-      const bytes = result.outputs[name];
-      if (!bytes) continue;
-      const id = `py_${this.taskId}_${name.replace(/[^A-Za-z0-9_.-]/g, '_')}`;
-      const hash = sha256Hex(bytes);
-      this.blobs.writeStaged(id, bytes);
-      this.blobs.publish(id, bytes.length, hash);
-      const meta = this.store.stageArtifact({
-        projectId: this.projectId,
-        taskId: this.taskId,
-        agentId: this.agentId,
-        path: `outputs/${name}`,
-        bytes: bytes.length,
-        sha256: hash,
-      });
-      // Align metadata id with blob id for durable cross-reference.
-      this.store.artifacts.delete(meta.id);
-      this.store.artifacts.set(id, { ...meta, id });
-      this.store.publishArtifact(id, bytes.length, hash);
-      artifactIds.push(id);
-    }
-    const combined = `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`;
+    const artifactIds = persistOutputs(
+      this.blobs,
+      this.store,
+      { taskId: this.taskId, projectId: this.projectId, agentId: this.agentId, prefix: 'py' },
+      result.outputs,
+      declared,
+    );
     this.store.appendEvent(this.taskId, 'tool.completed', `python.execute ok in ${result.durationMs}ms (${artifactIds.length} artifacts)`);
     let resultValue: unknown;
     try {
@@ -151,7 +168,6 @@ export class PythonToolExecutor implements ToolExecutor {
     } catch {
       resultValue = undefined;
     }
-    void combined;
     return { ok: true, resultHash: sha256Hex(new TextEncoder().encode(result.stdout + result.stderr)), result: { result: resultValue, artifacts: artifactIds, packagesUsed: result.packagesUsed } };
   }
 }
