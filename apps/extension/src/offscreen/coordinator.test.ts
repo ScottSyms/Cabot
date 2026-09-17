@@ -76,8 +76,7 @@ describe('offscreen coordinator', () => {
     expect(listed.tasks).toHaveLength(0);
   });
 
-  it('falls back to file settings when the primary store is unavailable', async () => {
-    const snapshots = new MemorySnapshotBackend();
+  it('falls back to file settings when the primary store is unavailable', async () => {    const snapshots = new MemorySnapshotBackend();
     const failing: SettingsStore = {
       load: async () => {
         throw new Error('chrome.storage.local unavailable in this context');
@@ -93,5 +92,29 @@ describe('offscreen coordinator', () => {
     // Primary tried first, then latched to fallback.
     await settings.save({ endpoint: 'https://y/v1', modelId: 'm2' });
     expect(await fileBacked.load()).toEqual({ endpoint: 'https://y/v1', modelId: 'm2' });
+  });
+});
+
+describe('provider settings', () => {
+  it('keeps the stored key on blank save and never returns it', async () => {
+    const snapshots = new MemorySnapshotBackend();
+    const coord = createCoordinator({ snapshots, settings: settings(), browserBackend: new FakeBrowserBackend() });
+    await coord.boot();
+    await coord.handleMessage({
+      type: 'cabot.save-settings',
+      settings: { endpoint: 'https://x/v1', modelId: 'm', apiKey: 'sekret' },
+    });
+    // Blank key means keep.
+    await coord.handleMessage({
+      type: 'cabot.save-settings',
+      settings: { endpoint: 'https://x/v1', modelId: 'm', apiKey: undefined },
+    });
+    const got = (await coord.handleMessage({ type: 'cabot.get-settings' })) as {
+      settings: { endpoint: string; modelId: string; apiKey?: string };
+      hasApiKey: boolean;
+    };
+    expect(got.settings).toEqual({ endpoint: 'https://x/v1', modelId: 'm' });
+    expect(got.hasApiKey).toBe(true);
+    expect('apiKey' in got.settings).toBe(false);
   });
 });

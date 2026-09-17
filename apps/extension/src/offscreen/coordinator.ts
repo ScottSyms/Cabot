@@ -284,11 +284,23 @@ export function createCoordinator(deps: CoordinatorDeps) {
         emit('user-message', msg.taskId);
         return { taskId: msg.taskId, ...(await continueTask(msg.taskId) as Record<string, unknown>) };
       }
-      case 'cabot.get-settings':
-        return { settings: await deps.settings.load() };
-      case 'cabot.save-settings':
-        await deps.settings.save(msg.settings);
+      case 'cabot.get-settings': {
+        const s = await deps.settings.load();
+        // The key never leaves the coordinator toward UI contexts; the panel
+        // only learns whether one is stored.
+        return { settings: s ? { endpoint: s.endpoint, modelId: s.modelId } : null, hasApiKey: !!s?.apiKey };
+      }
+      case 'cabot.save-settings': {
+        const prev = await deps.settings.load().catch(() => null);
+        const incoming = msg.settings;
+        // Blank key means "keep the stored one", not "delete it".
+        await deps.settings.save({
+          endpoint: incoming.endpoint,
+          modelId: incoming.modelId,
+          apiKey: incoming.apiKey || prev?.apiKey,
+        });
         return { ok: true };
+      }
       default:
         throw new Error(`unknown message ${(msg as { type: string }).type}`);
     }

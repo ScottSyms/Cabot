@@ -262,12 +262,14 @@ function buildSettings(client: PanelClient): HTMLElement {
         if (st) st.textContent = `save failed: ${errorText(e)}`;
       });
   client
-    .send<{ settings: { endpoint: string; modelId: string } | null }>({ type: 'cabot.get-settings' })
-    .then(({ settings }) => {
+    .send<{ settings: { endpoint: string; modelId: string } | null; hasApiKey: boolean }>({ type: 'cabot.get-settings' })
+    .then(({ settings, hasApiKey }) => {
       if (settings) {
         endpoint.value = settings.endpoint;
         model.value = settings.modelId;
-      } else {
+      }
+      if (hasApiKey) key.placeholder = '•••••••• (saved — leave blank to keep)';
+      if (!settings && !hasApiKey) {
         const st = document.getElementById('cabot-status');
         if (st) st.textContent = 'configure a model provider to begin';
       }
