@@ -152,3 +152,27 @@ describe('non-JSON endpoint responses', () => {
     await expect(provider.decide(baseRequest)).rejects.toThrow(/HTTP 404 at https:\/\/openrouter\.ai\/api\/v1\/chat\/completions/);
   });
 });
+
+describe('budget guidance', () => {
+  it('tells the model what remains and to conclude when low', async () => {
+    const { calls } = stubFetch({ choices: [{ message: { content: 'done' }, finish_reason: 'stop' }] });
+    const provider = new OpenAICompatibleProvider({ endpoint: 'http://localhost:11434/v1', modelId: 'm' });
+    await provider.decide({
+      ...baseRequest,
+      budget: { modelCallsLimit: 10, modelCallsUsed: 9, toolCallsLimit: 20, toolCallsUsed: 18 },
+    });
+    const sent = JSON.parse(calls[0].init.body as string) as { messages: { role: string; content: string }[] };
+    const sys = sent.messages[0].content;
+    expect(sys).toContain('1 of 10 model calls remaining');
+    expect(sys).toContain('2 of 20 tool calls remaining');
+    expect(sys).toMatch(/finish now with a done summary/);
+  });
+
+  it('omits budget guidance when no budget is provided', async () => {
+    const { calls } = stubFetch({ choices: [{ message: { content: 'done' }, finish_reason: 'stop' }] });
+    const provider = new OpenAICompatibleProvider({ endpoint: 'http://localhost:11434/v1', modelId: 'm' });
+    await provider.decide(baseRequest);
+    const sent = JSON.parse(calls[0].init.body as string) as { messages: { role: string; content: string }[] };
+    expect(sent.messages[0].content).not.toContain('Budget:');
+  });
+});

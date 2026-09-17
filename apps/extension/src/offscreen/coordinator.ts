@@ -18,6 +18,19 @@ export interface ProviderSettings {
   endpoint: string;
   apiKey?: string;
   modelId: string;
+  /** Operator behavior instructions, appended to the fixed safety preamble. */
+  systemPrompt?: string;
+  /** Default per-agent limits applied when a task creates its agent. */
+  budget?: { maxModelCalls?: number; maxToolCalls?: number; maxRuntimeMinutes?: number };
+}
+
+export const DEFAULT_BUDGET = { maxModelCalls: 60, maxToolCalls: 150, maxRuntimeMinutes: 30 };
+
+export function effectiveBudget(settings: ProviderSettings | null): { maxModelCalls: number; maxToolCalls: number } {
+  return {
+    maxModelCalls: settings?.budget?.maxModelCalls ?? DEFAULT_BUDGET.maxModelCalls,
+    maxToolCalls: settings?.budget?.maxToolCalls ?? DEFAULT_BUDGET.maxToolCalls,
+  };
 }
 
 export interface SettingsStore {
@@ -63,9 +76,9 @@ export type CoordinatorMessage =
   | { type: 'cabot.cancel-task'; taskId: string }
   | { type: 'cabot.run-summary'; objective: string; projectName?: string }
   | { type: 'cabot.send-message'; taskId: string; text: string }
+  | { type: 'cabot.extend-budget'; agentId: string; maxModelCalls?: number; maxToolCalls?: number }
   | { type: 'cabot.get-settings' }
   | { type: 'cabot.save-settings'; settings: ProviderSettings };
-
 export interface CoordinatorDeps {
   snapshots: SnapshotBackend;
   settings: SettingsStore;
@@ -263,12 +276,18 @@ export function createCoordinator(deps: CoordinatorDeps) {
     // Hold the task lock for the whole run so cancel/send can tell whether a
     // loop is actually in flight.
     const outcome = await runs.runExclusive(task.id, () =>
-      svc.runTask(task.id, task.ownerAgentId, 25, () => {
-        // Per-turn: persist, then tell UIs to refresh (selection, drafts,
-        // and scroll are preserved panel-side).
-        emit('task-progress', task.id);
-        return persist().catch(() => {});
-      }),
+      svc.runTask(
+        task.id,
+        task.ownerAgentId,
+        25,
+        () => {
+          // Per-turn: persist, then tell UIs to refresh (selection, drafts,
+          // and scroll are preserved panel-side).
+          emit('task-progress', task.id);
+          return persist().catch(() => {});
+        },
+        { systemPrompt: settings.systemPrompt },
+      ),
     );
     await persist();
     const status = (outcome as { status: string }).status;
@@ -287,7 +306,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
     const agent = s.createAgent({
       projectId: project.id, role: 'researcher', objective, status: 'RUNNING',
       modelConfig: { providerId: 'openai-compatible', modelId: settings.modelId },
-      skillIds: [], budget: { maxModelCalls: 20, maxToolCalls: 30 },
+      skillIds: [], budget: effectiveBudget(settings),
       workspaceMounts: [], delegationDepth: 0,
     });
     const task = s.createTask({ projectId: project.id, ownerAgentId: agent.id, title: objective.slice(0, 80), objective });
@@ -298,10 +317,16 @@ export function createCoordinator(deps: CoordinatorDeps) {
     const svc = new CabotRuntimeService(s, b, provider, executor);
     await persist();
     const outcome = await runs.runExclusive(task.id, () =>
-      svc.runTask(task.id, agent.id, 25, () => {
-        emit('task-progress', task.id);
-        return persist().catch(() => {});
-      }),
+      svc.runTask(
+        task.id,
+        agent.id,
+        25,
+        () => {
+          emit('task-progress', task.id);
+          return persist().catch(() => {});
+        },
+        { systemPrompt: settings.systemPrompt },
+      ),
     );
     await persist();
     const done = (outcome as { status: string }).status;
@@ -373,11 +398,25 @@ export function createCoordinator(deps: CoordinatorDeps) {
           ...(await continueTask(msg.taskId) as Record<string, unknown>),
         };
       }
+      case 'cabot.extend-budget': {
+        const agent = queries.extendBudget(msg.agentId, {
+          maxModelCalls: msg.maxModelCalls,
+          maxToolCalls: msg.maxToolCalls,
+        });
+        await persist();
+        emit('budget-extended', undefined, { agentId: msg.agentId, budget: agent.budget });
+        return { ok: true, budget: agent.budget, spent: agent.spent };
+      }
       case 'cabot.get-settings': {
         const s = await deps.settings.load();
         // The key never leaves the coordinator toward UI contexts; the panel
-        // only learns whether one is stored.
-        return { settings: s ? { endpoint: s.endpoint, modelId: s.modelId } : null, hasApiKey: !!s?.apiKey };
+        // only learns whether one is stored. Prompt and budget are safe to show.
+        return {
+          settings: s
+            ? { endpoint: s.endpoint, modelId: s.modelId, systemPrompt: s.systemPrompt, budget: s.budget }
+            : null,
+          hasApiKey: !!s?.apiKey,
+        };
       }
       case 'cabot.save-settings': {
         const prev = await deps.settings.load().catch(() => null);
@@ -387,6 +426,8 @@ export function createCoordinator(deps: CoordinatorDeps) {
           endpoint: incoming.endpoint,
           modelId: incoming.modelId,
           apiKey: incoming.apiKey || prev?.apiKey,
+          systemPrompt: incoming.systemPrompt,
+          budget: incoming.budget,
         });
         return { ok: true };
       }

@@ -67,7 +67,10 @@ function railRow(
   const main = el('span', undefined, { class: 'rail-main' });
   main.append(el('span', v.name, { class: 'rail-name' }));
   const sub = el('span', undefined, { class: 'rail-sub muted' });
-  sub.textContent = `${v.agent.status}${v.task ? ` · ${v.task.status}` : ''} · model ${v.agent.spent.modelCalls} · tools ${v.agent.spent.toolCalls}`;
+  const b = budgetLabel(v.agent);
+  sub.textContent = `${v.agent.status}${v.task ? ` · ${v.task.status}` : ''} · ${b.text}`;
+  if (b.exhausted) sub.className = 'rail-sub hint-warn';
+  else if (b.low) sub.className = 'rail-sub rail-sub-low';
   main.append(sub);
   row.append(dot, main);
   if (v.pendingApprovals > 0) row.append(el('span', `!${v.pendingApprovals}`, { class: 'badge badge-warn' }));
@@ -179,8 +182,7 @@ export function renderStats(container: HTMLElement, tasks: TaskSummary[], approv
   }
 }
 
-/** Settings dialog shared by panel and workspace. Key stays write-only. */
-export function openSettingsDialog(client: PanelClient, onStatus: (t: string) => void): void {
+/** Settings dialog shared by panel and workspace. Key stays write-only. */export function openSettingsDialog(client: PanelClient, onStatus: (t: string) => void): void {
   const overlay = el('div', undefined, { class: 'modal-overlay' });
   const dialog = el('div', undefined, { class: 'modal' });
   dialog.append(el('h3', 'Provider settings'));
@@ -191,15 +193,41 @@ export function openSettingsDialog(client: PanelClient, onStatus: (t: string) =>
   const key = el('input') as HTMLInputElement;
   key.placeholder = 'API key (optional)';
   key.type = 'password';
+  const prompt = el('textarea') as HTMLTextAreaElement;
+  prompt.placeholder = 'Behavior instructions for the agent (optional)…';
+  prompt.rows = 4;
+  const budgetModel = el('input') as HTMLInputElement;
+  budgetModel.type = 'number';
+  budgetModel.min = '1';
+  budgetModel.placeholder = '60';
+  const budgetTools = el('input') as HTMLInputElement;
+  budgetTools.type = 'number';
+  budgetTools.min = '1';
+  budgetTools.placeholder = '150';
+  const budgetRow = el('div', undefined, { class: 'modal-row' });
+  budgetRow.append(
+    labelled('Max model calls', budgetModel),
+    labelled('Max tool calls', budgetTools),
+  );
   const row = el('div', undefined, { class: 'modal-row' });
   const save = el('button', 'Save');
   const cancel = el('button', 'Cancel', { class: 'secondary' });
   cancel.onclick = () => overlay.remove();
   save.onclick = () => {
+    const num = (v: string): number | undefined => {
+      const n = Number(v);
+      return Number.isFinite(n) && n > 0 ? n : undefined;
+    };
     checked(
       client.send({
         type: 'cabot.save-settings',
-        settings: { endpoint: endpoint.value, modelId: model.value, apiKey: key.value || undefined },
+        settings: {
+          endpoint: endpoint.value,
+          modelId: model.value,
+          apiKey: key.value || undefined,
+          systemPrompt: prompt.value.trim() || undefined,
+          budget: { maxModelCalls: num(budgetModel.value), maxToolCalls: num(budgetTools.value) },
+        },
       }),
     )
       .then(() => {
@@ -240,22 +268,52 @@ export function openSettingsDialog(client: PanelClient, onStatus: (t: string) =>
     model,
     el('label', 'API key'),
     key,
+    el('label', 'System prompt (agent behavior)'),
+    prompt,
+    el('label', 'Budget per task'),
+    budgetRow,
     row,
-    el('p', 'The key is stored locally and sent only as an Authorization header.', { class: 'muted' }),
+    el('p', 'The key is stored locally and sent only as an Authorization header. Your system prompt is added after a fixed safety preamble that cannot be overridden.', { class: 'muted' }),
   );
   overlay.append(dialog);
   overlay.onclick = (e) => {
     if (e.target === overlay) overlay.remove();
   };
-  checked(client.send<{ settings: { endpoint: string; modelId: string } | null; hasApiKey: boolean }>({ type: 'cabot.get-settings' }))
+  checked(
+    client.send<{
+      settings: { endpoint: string; modelId: string; systemPrompt?: string; budget?: { maxModelCalls?: number; maxToolCalls?: number } } | null;
+      hasApiKey: boolean;
+    }>({ type: 'cabot.get-settings' }),
+  )
     .then(({ settings, hasApiKey }) => {
       if (settings) {
         endpoint.value = settings.endpoint;
         model.value = settings.modelId;
+        prompt.value = settings.systemPrompt ?? '';
+        if (settings.budget?.maxModelCalls) budgetModel.value = String(settings.budget.maxModelCalls);
+        if (settings.budget?.maxToolCalls) budgetTools.value = String(settings.budget.maxToolCalls);
       }
       if (hasApiKey) key.placeholder = '•••••••• (saved — leave blank to keep)';
       updateHint();
     })
     .catch(() => updateHint());
   document.body.append(overlay);
+}
+
+function labelled(text: string, input: HTMLElement): HTMLElement {
+  const wrap = el('div', undefined, { class: 'field' });
+  wrap.append(el('label', text), input);
+  return wrap;
+}
+
+/** "model 12/60 · tools 40/150", flagged when near or at the limit. */
+export function budgetLabel(agent: Agent): { text: string; low: boolean; exhausted: boolean } {
+  const ml = agent.budget.maxModelCalls;
+  const tl = agent.budget.maxToolCalls;
+  const text = `model ${agent.spent.modelCalls}${ml ? `/${ml}` : ''} · tools ${agent.spent.toolCalls}${tl ? `/${tl}` : ''}`;
+  const modelLow = ml !== undefined && agent.spent.modelCalls >= ml * 0.8;
+  const toolLow = tl !== undefined && agent.spent.toolCalls >= tl * 0.8;
+  const exhausted =
+    (ml !== undefined && agent.spent.modelCalls >= ml) || (tl !== undefined && agent.spent.toolCalls >= tl);
+  return { text, low: modelLow || toolLow, exhausted };
 }

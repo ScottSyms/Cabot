@@ -4,7 +4,7 @@
 // Credential handling: the API key travels only in the Authorization header,
 // never in prompts, logs, or stored state. Endpoints are allow-listed by
 // explicit configuration, not by model output.
-import type { LoopAction, ModelDescriptor, ModelProvider, ModelRequest, ModelResponse } from './types.js';
+import type { BudgetStatus, LoopAction, ModelDescriptor, ModelProvider, ModelRequest, ModelResponse } from './types.js';
 
 export interface OpenAICompatibleConfig {
   endpoint: string;
@@ -38,10 +38,14 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
   async decide(request: ModelRequest): Promise<ModelResponse> {
     const base = this.config.endpoint.replace(/\/+$/, '').replace(/\/chat\/completions$/, '');
+    const budgetLine = request.budget ? renderBudget(request.budget) : '';
     const body = {
       model: this.config.modelId,
       messages: [
-        { role: 'system', content: `${request.systemPolicy}\nObjective: ${request.objective}` },
+        {
+          role: 'system',
+          content: `${request.systemPolicy}\nObjective: ${request.objective}${budgetLine ? `\n${budgetLine}` : ''}`,
+        },
         ...(request.recentConversation ?? []).map((m) => ({
           role: m.role === 'agent' ? ('assistant' as const) : ('user' as const),
           content: m.text,
@@ -140,8 +144,28 @@ export class OpenAICompatibleProvider implements ModelProvider {
   }
 }
 
-function contentHashOf(text: string): string {
-  let h1 = 0xdeadbeef;
+/**
+ * Budget guidance injected into the system message. Turns "ran out of
+ * budget" into pacing: the model knows what's left and is told to conclude
+ * with a summary as it approaches the limit.
+ */
+function renderBudget(b: BudgetStatus): string {
+  const parts: string[] = [];
+  const modelLeft = b.modelCallsLimit !== undefined ? b.modelCallsLimit - b.modelCallsUsed : undefined;
+  const toolLeft = b.toolCallsLimit !== undefined ? b.toolCallsLimit - b.toolCallsUsed : undefined;
+  if (modelLeft !== undefined) parts.push(`${modelLeft} of ${b.modelCallsLimit} model calls remaining`);
+  if (toolLeft !== undefined) parts.push(`${toolLeft} of ${b.toolCallsLimit} tool calls remaining`);
+  if (parts.length === 0) return '';
+  const low =
+    (modelLeft !== undefined && modelLeft <= Math.max(1, Math.floor((b.modelCallsLimit ?? 0) * 0.2))) ||
+    (toolLeft !== undefined && toolLeft <= Math.max(1, Math.floor((b.toolCallsLimit ?? 0) * 0.2)));
+  const guidance = low
+    ? 'Budget is low: stop starting new work and finish now with a done summary of what you have.'
+    : 'Be economical with calls; when the budget is low, conclude with a done summary rather than starting new work.';
+  return `Budget: ${parts.join(', ')}. ${guidance}`;
+}
+
+function contentHashOf(text: string): string {  let h1 = 0xdeadbeef;
   let h2 = 0x41c6ce57;
   for (let i = 0; i < text.length; i += 1) {
     const ch = text.charCodeAt(i);

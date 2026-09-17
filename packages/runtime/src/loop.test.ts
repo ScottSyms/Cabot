@@ -276,3 +276,78 @@ describe('model failure handling', () => {
     expect(store.tasks.get(task.id)?.status).toBe('READY');
   });
 });
+
+describe('budget management', () => {
+  it('suspends cleanly on model-call exhaustion instead of stalling', async () => {
+    const { store, broker, agent, task } = setup();
+    // Shrink the model budget so the second turn exhausts it.
+    store.agents.get(agent.id)!.budget.maxModelCalls = 1;
+    const model = new FakeModelProvider();
+    model.script(task.id, [
+      { kind: 'tool', toolId: 'notes.write', args: {}, argsHash: 'h1', idempotencyKey: 'k1' },
+      { kind: 'tool', toolId: 'notes.write', args: {}, argsHash: 'h2', idempotencyKey: 'k2' },
+    ]);
+    const svc = new CabotRuntimeService(store, broker, model, { execute: async () => ({ ok: true }) });
+    const outcome = await svc.runTask(task.id, agent.id, 10);
+    expect(outcome.status).toBe('suspended');
+    expect(store.tasks.get(task.id)?.status).toBe('SUSPENDED');
+    expect(store.agents.get(agent.id)?.status).toBe('PAUSED');
+    expect(store.events.some((e) => e.summary.includes('model-call budget exhausted'))).toBe(true);
+  });
+
+  it('suspends cleanly on tool-call exhaustion', async () => {
+    const { store, broker, agent, task } = setup();
+    store.agents.get(agent.id)!.budget.maxToolCalls = 1;
+    const model = new FakeModelProvider();
+    model.script(task.id, [
+      { kind: 'tool', toolId: 'notes.write', args: {}, argsHash: 'h1', idempotencyKey: 'k1' },
+      { kind: 'tool', toolId: 'notes.write', args: {}, argsHash: 'h2', idempotencyKey: 'k2' },
+    ]);
+    const svc = new CabotRuntimeService(store, broker, model, { execute: async () => ({ ok: true }) });
+    expect((await svc.runTask(task.id, agent.id, 10)).status).toBe('suspended');
+    expect(store.tasks.get(task.id)?.status).toBe('SUSPENDED');
+    expect(store.events.some((e) => e.summary.includes('tool-call budget exhausted'))).toBe(true);
+  });
+
+  it('extends budget and completes after exhaustion', async () => {
+    const { store, broker, agent, task } = setup();
+    store.agents.get(agent.id)!.budget.maxModelCalls = 1;
+    const model = new FakeModelProvider();
+    model.script(task.id, [
+      { kind: 'tool', toolId: 'notes.write', args: {}, argsHash: 'h1', idempotencyKey: 'k1' },
+      { kind: 'tool', toolId: 'notes.write', args: {}, argsHash: 'h2', idempotencyKey: 'k2' },
+    ]);
+    const svc = new CabotRuntimeService(store, broker, model, { execute: async () => ({ ok: true }) });
+    expect((await svc.runTask(task.id, agent.id, 10)).status).toBe('suspended');
+
+    const before = store.agents.get(agent.id)!.budget.maxModelCalls!;
+    svc.extendBudget(agent.id, { maxModelCalls: before + 5, maxToolCalls: 50 });
+    expect(store.agents.get(agent.id)!.budget.maxModelCalls).toBe(before + 5);
+    // Lowering is ignored: extension never reduces headroom.
+    svc.extendBudget(agent.id, { maxModelCalls: 1 });
+    expect(store.agents.get(agent.id)!.budget.maxModelCalls).toBe(before + 5);
+
+    svc.resumeTask(task.id);
+    model.script(task.id, [{ kind: 'done', summary: 'finished after extension' }]);
+    expect((await svc.runTask(task.id, agent.id, 10)).status).toBe('complete');
+  });
+
+  it('sends remaining budget and the operator prompt to the model', async () => {
+    const { store, broker, agent, task } = setup();
+    let seen: { systemPolicy: string; budget?: { modelCallsLimit?: number; modelCallsUsed: number } } | undefined;
+    const model = {
+      id: 'spy',
+      listModels: async () => [],
+      decide: async (req: Parameters<FakeModelProvider['decide']>[0]) => {
+        seen = { systemPolicy: req.systemPolicy, budget: req.budget };
+        return { action: { kind: 'done' as const, summary: 'ok' } };
+      },
+    };
+    const svc = new CabotRuntimeService(store, broker, model, { execute: async () => ({ ok: true }) });
+    await svc.runTask(task.id, agent.id, 5, undefined, { systemPrompt: 'Always cite two sources.' });
+    expect(seen?.systemPolicy).toContain('least privilege');
+    expect(seen?.systemPolicy).toContain('Always cite two sources.');
+    expect(seen?.budget?.modelCallsLimit).toBe(50);
+    expect(seen?.budget?.modelCallsUsed).toBe(1);
+  });
+});

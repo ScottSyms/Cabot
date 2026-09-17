@@ -4,7 +4,7 @@ import type { Agent, AgentId, ProjectId, Task, TaskId } from '@cabot/contracts';
 import type { ModelProvider } from '@cabot/providers';
 import { DurableStore } from '@cabot/storage/browser-chrome';
 import { CapabilityBroker } from '@cabot/policy';
-import { runUntilSettled, syncAgentToTask, type ToolExecutor } from './loop.js';
+import { runUntilSettled, syncAgentToTask, type ToolExecutor, type TurnOptions } from './loop.js';
 import {
   getDashboard,
   getTaskDetail,
@@ -226,15 +226,33 @@ export class CabotRuntimeService {
   }
 
   /** Run the checkpointed loop for a task (offscreen worker entry point). */
-  async runTask(taskId: TaskId, agentId: AgentId, maxTurns = 25, onTurn?: () => void | Promise<void>) {
+  async runTask(taskId: TaskId, agentId: AgentId, maxTurns = 25, onTurn?: () => void | Promise<void>, options: TurnOptions = {}) {
     const executor = this.executor ?? { execute: async () => ({ ok: true }) };
     const task = this.store.tasks.get(taskId);
     if (task?.status === 'CREATED') this.store.transitionTask(taskId, 'READY', 'auto-ready');
     if (this.store.tasks.get(taskId)?.status === 'READY') this.store.transitionTask(taskId, 'RUNNING', 'auto-run');
     try {
-      return await runUntilSettled(this.store, this.broker, this.model, executor, taskId, agentId, maxTurns, onTurn);
+      return await runUntilSettled(this.store, this.broker, this.model, executor, taskId, agentId, maxTurns, onTurn, options);
     } finally {
       syncAgentToTask(this.store, taskId, agentId);
     }
+  }
+
+  /**
+   * Raise an agent's budget limits (user-approved recovery from exhaustion).
+   * Values are absolute new ceilings, not deltas; lower values are ignored so
+   * an extend can never reduce headroom below what was already granted.
+   */
+  extendBudget(agentId: AgentId, next: { maxModelCalls?: number; maxToolCalls?: number }): Agent {
+    const agent = this.store.agents.get(agentId);
+    if (!agent) throw new Error(`unknown agent ${agentId}`);
+    if (next.maxModelCalls !== undefined && next.maxModelCalls > (agent.budget.maxModelCalls ?? 0)) {
+      agent.budget.maxModelCalls = next.maxModelCalls;
+    }
+    if (next.maxToolCalls !== undefined && next.maxToolCalls > (agent.budget.maxToolCalls ?? 0)) {
+      agent.budget.maxToolCalls = next.maxToolCalls;
+    }
+    agent.updatedAt = new Date().toISOString();
+    return { ...agent, spent: { ...agent.spent } };
   }
 }

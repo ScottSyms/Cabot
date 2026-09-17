@@ -5,6 +5,7 @@ import type { Agent, ApprovalInboxItem, TaskDetail } from '@cabot/runtime';
 import { checked, el, errorText, statusClass, type PanelClient, type TaskSummary } from '../ui/dom.js';
 import {
   agentViews,
+  budgetLabel,
   openSettingsDialog,
   renderActivity,
   renderAgentRail,
@@ -126,10 +127,18 @@ export function renderWorkspace(root: HTMLElement, client: PanelClient): { refre
     composer.style.display = '';
     const title = el('h2', view.name);
     const badge = el('span', view.agent.status, { class: statusClass(view.agent.status) });
-    header.append(title, badge);
+    const budget = budgetLabel(view.agent);
+    const budgetEl = el('span', budget.text, { class: `mono budget${budget.low ? ' hint-warn' : ' muted'}` });
+    header.append(title, badge, budgetEl);
     const spacerH = el('span', undefined, { class: 'spacer' });
     header.append(spacerH);
     if (view.task) {
+      // Budget exhaustion is recoverable: raise the limit and keep going.
+      if (budget.exhausted) {
+        const extend = el('button', 'Continue with more budget', { class: 'good' });
+        extend.onclick = () => extendAndContinue(view.agent.id, view.task!.id);
+        header.append(extend);
+      }
       const pause = el('button', 'Pause', { class: 'secondary' });
       pause.onclick = () => act({ type: 'cabot.pause-task', taskId: view.task!.id });
       const resume = el('button', 'Resume', { class: 'secondary' });
@@ -195,8 +204,27 @@ export function renderWorkspace(root: HTMLElement, client: PanelClient): { refre
     void renderMain();
   }
 
-  function removeAgent(agentId: string): void {
+  /**
+   * Raise the agent's limits, resume the suspended task, and drive it on.
+   * Extension is explicit and per-task: runaway protection stays intact.
+   */
+  function extendAndContinue(agentId: string, taskId: string): void {
     const view = state.views.find((v) => v.agent.id === agentId);
+    if (!view) return;
+    const nextModel = (view.agent.budget.maxModelCalls ?? view.agent.spent.modelCalls) + 60;
+    const nextTools = (view.agent.budget.maxToolCalls ?? view.agent.spent.toolCalls) + 150;
+    setStatus(`extending budget to ${nextModel} model / ${nextTools} tool calls…`);
+    checked(client.send({ type: 'cabot.extend-budget', agentId, maxModelCalls: nextModel, maxToolCalls: nextTools }))
+      .then(() => checked(client.send({ type: 'cabot.resume-task', taskId })))
+      .then(() => checked(client.send<{ outcome?: { status: string }; queued?: boolean }>({ type: 'cabot.send-message', taskId, text: 'Continue and finish the task.' })))
+      .then((res) => {
+        setStatus(res.queued ? 'queued — the running turn will pick it up' : `agent replied: ${res.outcome?.status ?? 'done'}`);
+        return refresh();
+      })
+      .catch((e) => setStatus(`extend failed: ${errorText(e)}`));
+  }
+
+  function removeAgent(agentId: string): void {    const view = state.views.find((v) => v.agent.id === agentId);
     const label = view?.name ?? agentId;
     if (!window.confirm(`Remove "${label}" and its transcript from history? This cannot be undone.`)) return;
     setStatus('removing…');

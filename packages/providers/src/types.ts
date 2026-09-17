@@ -5,6 +5,13 @@ export interface ModelDescriptor {
   capabilities: string[];
 }
 
+export interface BudgetStatus {
+  modelCallsLimit?: number;
+  modelCallsUsed: number;
+  toolCallsLimit?: number;
+  toolCallsUsed: number;
+}
+
 export interface ModelRequest {
   taskId: string;
   agentId: string;
@@ -15,6 +22,8 @@ export interface ModelRequest {
   recentEvents: { type: string; summary: string }[];
   /** Recent user/agent transcript (capped by the caller). */
   recentConversation?: { role: 'user' | 'agent'; text: string }[];
+  /** Remaining budget so the model can pace itself and conclude in time. */
+  budget?: BudgetStatus;
 }
 
 export type LoopAction =

@@ -257,3 +257,55 @@ describe('auto-resume on boot', () => {
     expect(coord.ready().store.tasks.get(task.id)?.status).toBe('BLOCKED');
   });
 });
+
+describe('settings: prompt and budget', () => {
+  it('round-trips system prompt and budget without leaking the key', async () => {
+    const snapshots = new MemorySnapshotBackend();
+    const store: SettingsStore = (() => {
+      let current: import('./coordinator.js').ProviderSettings | null = null;
+      return {
+        load: async () => current,
+        save: async (s) => {
+          current = s;
+        },
+      };
+    })();
+    const coord = createCoordinator({ snapshots, settings: store, browserBackend: new FakeBrowserBackend() });
+    await coord.boot();
+    await coord.handleMessage({
+      type: 'cabot.save-settings',
+      settings: {
+        endpoint: 'https://openrouter.ai/api/v1',
+        modelId: 'm',
+        apiKey: 'sekret',
+        systemPrompt: 'Be concise.',
+        budget: { maxModelCalls: 12, maxToolCalls: 34 },
+      },
+    });
+    const got = (await coord.handleMessage({ type: 'cabot.get-settings' })) as {
+      settings: { systemPrompt?: string; budget?: { maxModelCalls?: number } };
+      hasApiKey: boolean;
+    };
+    expect(got.settings.systemPrompt).toBe('Be concise.');
+    expect(got.settings.budget?.maxModelCalls).toBe(12);
+    expect(got.hasApiKey).toBe(true);
+    expect(JSON.stringify(got.settings)).not.toContain('sekret');
+  });
+
+  it('extends an agent budget via message', async () => {
+    const snapshots = new MemorySnapshotBackend();
+    const coord = createCoordinator({ snapshots, settings: settings(), browserBackend: new FakeBrowserBackend() });
+    await coord.boot();
+    const s = coord.ready().store;
+    const project = s.createProject('P');
+    const agent = s.createAgent({
+      projectId: project.id, role: 'r', objective: 'o', status: 'RUNNING',
+      modelConfig: { providerId: 'x', modelId: 'y' }, skillIds: [],
+      budget: { maxModelCalls: 5, maxToolCalls: 5 }, workspaceMounts: [], delegationDepth: 0,
+    });
+    const res = (await coord.handleMessage({ type: 'cabot.extend-budget', agentId: agent.id, maxModelCalls: 40, maxToolCalls: 80 })) as {
+      budget: { maxModelCalls: number; maxToolCalls: number };
+    };
+    expect(res.budget).toEqual({ maxModelCalls: 40, maxToolCalls: 80 });
+  });
+});

@@ -259,3 +259,18 @@ section.approvals { border-color: var(--warn); }
   margin-top: 1px;
 }
 .rail-remove:hover { background: var(--bad); color: #fff; }
+
+.budget { font-size: 12px; }
+.rail-sub-low { color: var(--warn); }
+.field { display: flex; flex-direction: column; flex: 1; }
+.field input { width: 100%; }
+.modal textarea {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  width: 100%;
+  font: inherit;
+  resize: vertical;
+}
