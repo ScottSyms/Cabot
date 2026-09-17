@@ -12,7 +12,7 @@
     "default_path": "dist/sidepanel.html"
   },
   "permissions": ["sidePanel", "alarms", "storage", "offscreen", "tabs", "scripting", "activeTab", "contextMenus", "unlimitedStorage"],
-  "host_permissions": [],
+  "host_permissions": ["https://*/*"],
   "offscreen_documents": [],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self';"

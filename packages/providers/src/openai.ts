@@ -63,6 +63,11 @@ export class OpenAICompatibleProvider implements ModelProvider {
         body: JSON.stringify(body),
         signal: ctrl.signal,
       });
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') throw new Error('model request timed out');
+      throw new Error(
+        `model endpoint unreachable (${base}): ${e instanceof Error ? e.message : String(e)}. Check network access and that the extension permits this host.`,
+      );
     } finally {
       clearTimeout(timer);
     }

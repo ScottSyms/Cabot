@@ -83,6 +83,14 @@ describe('openai-compatible provider', () => {
     expect(calls[0].url).toBe('https://openrouter.ai/api/v1/chat/completions');
   });
 
+  it('wraps network failures with an actionable message', async () => {
+    vi.stubGlobal('fetch', async () => {
+      throw new TypeError('Failed to fetch');
+    });
+    const provider = new OpenAICompatibleProvider({ endpoint: 'https://openrouter.ai/api/v1', modelId: 'm' });
+    await expect(provider.decide(baseRequest)).rejects.toThrow(/unreachable.*openrouter.*host permissions/);
+  });
+
   it('rejects unparseable tool arguments instead of dispatching', async () => {
     stubFetch({
       choices: [{ message: { tool_calls: [{ id: 'c1', type: 'function', function: { name: 'x', arguments: '{broken' } }] }, finish_reason: 'tool_calls' }],
