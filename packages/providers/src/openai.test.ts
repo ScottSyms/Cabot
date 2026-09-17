@@ -126,3 +126,29 @@ describe('openai-compatible provider', () => {
     await expect(provider.decide(baseRequest)).rejects.toThrow(/unparseable/);
   });
 });
+
+describe('non-JSON endpoint responses', () => {
+  function stubRaw(body: string, status: number, contentType: string) {
+    vi.stubGlobal('fetch', async () => ({
+      ok: status >= 200 && status < 300,
+      status,
+      headers: { get: (k: string) => (k.toLowerCase() === 'content-type' ? contentType : null) },
+      text: async () => body,
+      json: async () => {
+        throw new SyntaxError('Unexpected token <');
+      },
+    }) as unknown as Response);
+  }
+
+  it('explains an HTML page returned for a bare origin endpoint', async () => {
+    stubRaw('<!DOCTYPE html><html>OpenRouter</html>', 200, 'text/html; charset=utf-8');
+    const provider = new OpenAICompatibleProvider({ endpoint: 'https://openrouter.ai', modelId: 'm' });
+    await expect(provider.decide(baseRequest)).rejects.toThrow(/returned text\/html.*https:\/\/openrouter\.ai\/api\/v1/);
+  });
+
+  it('reports HTTP errors with the URL and model hint', async () => {
+    stubRaw('<!DOCTYPE html>Not Found', 404, 'text/html');
+    const provider = new OpenAICompatibleProvider({ endpoint: 'https://openrouter.ai/api/v1', modelId: 'bad' });
+    await expect(provider.decide(baseRequest)).rejects.toThrow(/HTTP 404 at https:\/\/openrouter\.ai\/api\/v1\/chat\/completions/);
+  });
+});

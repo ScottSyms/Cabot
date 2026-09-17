@@ -188,10 +188,38 @@ export function openSettingsDialog(client: PanelClient, onStatus: (t: string) =>
       .catch((e) => onStatus(`save failed: ${errorText(e)}`));
   };
   row.append(save, cancel);
+  // Inline hint catches the common mistake (website root instead of API base)
+  // before the user runs a task and hits the endpoint error.
+  const hint = el('p', '', { class: 'muted' });
+  const updateHint = (): void => {
+    const v = endpoint.value.trim();
+    if (!v) {
+      hint.textContent = 'Example: https://openrouter.ai/api/v1 or http://localhost:11434/v1';
+      return;
+    }
+    try {
+      const u = new URL(v);
+      const bareOrigin = u.pathname === '/' || u.pathname === '';
+      if (bareOrigin && !['localhost', '127.0.0.1'].includes(u.hostname)) {
+        hint.textContent = `This looks like a website root. Use the API base, e.g. ${u.origin}/v1`;
+        hint.className = 'hint-warn';
+      } else {
+        hint.textContent = 'Base URL only — Cabot appends /chat/completions.';
+        hint.className = 'muted';
+      }
+    } catch {
+      hint.textContent = 'Enter a full URL, e.g. https://openrouter.ai/api/v1';
+      hint.className = 'hint-warn';
+    }
+  };
+  endpoint.oninput = updateHint;
   dialog.append(
-    el('label', 'Endpoint'), endpoint,
-    el('label', 'Model'), model,
-    el('label', 'API key'), key, row,
+    el('label', 'Endpoint'), endpoint, hint,
+    el('label', 'Model'),
+    model,
+    el('label', 'API key'),
+    key,
+    row,
     el('p', 'The key is stored locally and sent only as an Authorization header.', { class: 'muted' }),
   );
   overlay.append(dialog);
@@ -205,7 +233,8 @@ export function openSettingsDialog(client: PanelClient, onStatus: (t: string) =>
         model.value = settings.modelId;
       }
       if (hasApiKey) key.placeholder = '•••••••• (saved — leave blank to keep)';
+      updateHint();
     })
-    .catch(() => {});
+    .catch(() => updateHint());
   document.body.append(overlay);
 }

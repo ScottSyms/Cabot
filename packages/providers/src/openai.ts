@@ -75,10 +75,43 @@ export class OpenAICompatibleProvider implements ModelProvider {
     } finally {
       clearTimeout(timer);
     }
+    const url = `${base}/chat/completions`;
     if (!res.ok) {
-      throw new Error(`model endpoint ${res.status}`);
+      let detail = '';
+      try {
+        const body = await res.text();
+        detail = body.slice(0, 200).replace(/\s+/g, ' ');
+      } catch {
+        // Body unavailable; status alone must suffice.
+      }
+      throw new Error(
+        `model endpoint HTTP ${res.status} at ${url}${detail ? `: ${detail}` : ''}. ` +
+          `Check the endpoint path (OpenRouter needs https://openrouter.ai/api/v1) and that the model id is valid.`,
+      );
     }
-    const data = (await res.json()) as ChatResponse;
+    const contentType = res.headers?.get?.('content-type') ?? '';
+    if (contentType && !contentType.includes('json')) {
+      let snippet = '';
+      try {
+        snippet = (await res.text()).slice(0, 120).replace(/\s+/g, ' ');
+      } catch {
+        // Snippet is best-effort.
+      }
+      throw new Error(
+        `model endpoint returned ${contentType || 'non-JSON'} instead of JSON at ${url}` +
+          `${snippet ? `: "${snippet}"` : ''}. The endpoint must be an API base URL ending in /v1 ` +
+          `(for OpenRouter: https://openrouter.ai/api/v1).`,
+      );
+    }
+    let data: ChatResponse;
+    try {
+      data = (await res.json()) as ChatResponse;
+    } catch {
+      throw new Error(
+        `model endpoint returned invalid JSON at ${url}. The endpoint must be an API base URL ` +
+          `(for OpenRouter: https://openrouter.ai/api/v1), not a website root.`,
+      );
+    }
     const message = data.choices[0]?.message;
     if (!message) throw new Error('empty model response');
     // Assistant prose is captured even on tool-call turns — it becomes the

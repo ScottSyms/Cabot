@@ -76,7 +76,9 @@ Then load unpacked:
    `manifest.json`). The bundle lives in `apps/extension/dist` and is
    git-ignored; rebuild after pulling.
 3. Open the side panel (action click opens it), configure the model
-   provider (gear icon: endpoint, model id, optional API key).
+   provider (gear icon: endpoint, model id, optional API key). The endpoint
+   is the API base, e.g. `https://openrouter.ai/api/v1` or
+   `http://localhost:11434/v1` — Cabot appends `/chat/completions`.
 4. Click **Open workspace** for the full agent interface: select an agent
    in the rail, follow its conversation, steer it from the composer,
    and resolve approvals inline.
