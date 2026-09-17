@@ -1,15 +1,11 @@
 import {
-  ChromeStorageBackend,
   OpfsSnapshotBackend,
-  ResilientSnapshotBackend,
   navigatorOpfsRoot,
 } from '@cabot/storage/browser-chrome';
 import { RelayBrowserBackend } from '@cabot/tools';
 import {
-  chromeSettingsStore,
   createCoordinator,
   fileSettingsStore,
-  withFallbackSettings,
   type CoordinatorMessage,
 } from './coordinator.js';
 
@@ -22,16 +18,10 @@ function report(): string {
 }
 
 async function main(): Promise<void> {
-  // Snapshots: chrome.storage where present, OPFS file otherwise. The
-  // fallback is permanent for the session and reported in boot warnings.
-  const snapshots = new ResilientSnapshotBackend(
-    new ChromeStorageBackend(),
-    new OpfsSnapshotBackend(navigatorOpfsRoot()),
-  );
-  const settings = withFallbackSettings(
-    chromeSettingsStore(),
-    fileSettingsStore(new OpfsSnapshotBackend(navigatorOpfsRoot(), 'cabot', 'settings.json')),
-  );
+  // OPFS-only persistence: snapshots and settings live as OPFS files, which
+  // exist uniformly across offscreen, worker, and panel contexts.
+  const snapshots = new OpfsSnapshotBackend(navigatorOpfsRoot());
+  const settings = fileSettingsStore(new OpfsSnapshotBackend(navigatorOpfsRoot(), 'cabot', 'settings.json'));
   // Privileged tab calls execute in the service worker via relay.
   const browserBackend = new RelayBrowserBackend(async (msg) => {
     const g = globalThis as unknown as { chrome?: { runtime?: { sendMessage(m: unknown): Promise<unknown> } } };

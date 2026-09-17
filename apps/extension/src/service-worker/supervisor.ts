@@ -5,10 +5,11 @@
 // the snapshot backend (chrome.storage.local in the browser); never in
 // service-worker globals.
 import {
-  ChromeStorageBackend,
+  OpfsSnapshotBackend,
   DurableStore,
   restoreStore,
   serializeStore,
+  navigatorOpfsRoot,
   type SnapshotBackend,
 } from '@cabot/storage/browser-chrome';
 import { ChromeBrowserBackend, type BrowserBackend } from '@cabot/tools';
@@ -119,7 +120,7 @@ export function createSupervisor(deps: SupervisorDeps) {
 export function wireExtensionRuntime(): void {
   if (typeof chrome === 'undefined') return;
     const supervisor = createSupervisor({
-      snapshots: new ChromeStorageBackend(),
+      snapshots: new OpfsSnapshotBackend(navigatorOpfsRoot()),
       browser: new ChromeBrowserBackend(),
       ensureOffscreenDocument: async () => {
         try {

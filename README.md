@@ -78,8 +78,8 @@ Then load unpacked:
 3. Open the side panel (action click opens it), configure the model
    provider (Settings: endpoint, model id, optional API key), and run a
    page summary.
-4. Close and reopen the browser: tasks, sources, and approvals persist via
-   `chrome.storage.local` snapshots reconciled on startup.
+4. Close and reopen the browser: tasks, sources, and approvals persist as
+   OPFS files reconciled on startup.
 
 Preview scope: read-only research tasks (list/read pages, capture sources).
 Write-path tools, Python/Skills, and MCP are implemented and tested but not
