@@ -7,7 +7,10 @@ async function main(): Promise<void> {
     settings: chromeSettingsStore(),
   });
   await coord.boot();
+  // Only supervisor-forwarded messages are executed. Panel broadcasts reach
+  // every context; without this guard each run would execute twice.
   chrome.runtime.onMessage.addListener((msg, _sender, respond) => {
+    if ((msg as { via?: string }).via !== 'supervisor') return;
     void coord
       .handleMessage(msg as CoordinatorMessage)
       .then(respond, (e: unknown) => respond({ error: e instanceof Error ? e.message : String(e) }));

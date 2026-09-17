@@ -28,7 +28,7 @@ function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-export function renderSidePanel(root: HTMLElement, client: PanelClient): void {
+export function renderSidePanel(root: HTMLElement, client: PanelClient): { refresh: () => Promise<void> } {
   root.innerHTML = '';
   const wrap = el('div', undefined, { id: 'cabot' });
   const header = el('h1');
@@ -183,9 +183,39 @@ export function renderSidePanel(root: HTMLElement, client: PanelClient): void {
     for (const a of detail.artifacts) arts.append(el('li', `${a.path} (${a.bytes} bytes)`, { class: 'mono' }));
     if (detail.artifacts.length === 0) arts.append(el('li', 'None yet.', { class: 'muted' }));
     detailBody.append(arts);
+    detailBody.append(el('h5', 'Message this agent'));
+    const msgRow = el('div');
+    const msgInput = el('input') as HTMLInputElement;
+    msgInput.placeholder = 'Steer the agent… (Enter to send)';
+    const send = el('button', 'Send') as HTMLButtonElement;
+    const doSend = () => {
+      const text = msgInput.value;
+      if (!text.trim()) return;
+      send.disabled = true;
+      setStatus('sending…');
+      client
+        .send<{ outcome: { status: string } }>({ type: 'cabot.send-message', taskId, text })
+        .then(({ outcome }) => {
+          setStatus(`agent replied: ${outcome.status}`);
+          msgInput.value = '';
+          void refresh();
+          void showDetail(taskId);
+        })
+        .catch((e) => setStatus(`send failed: ${errorText(e)}`))
+        .finally(() => {
+          send.disabled = false;
+        });
+    };
+    send.onclick = doSend;
+    msgInput.onkeydown = (e) => {
+      if (e.key === 'Enter') doSend();
+    };
+    msgRow.append(msgInput, send);
+    detailBody.append(msgRow);
   }
 
   void refresh();
+  return { refresh };
 }
 
 function section(title: string, body: HTMLElement, open: boolean, cls = ''): HTMLElement {

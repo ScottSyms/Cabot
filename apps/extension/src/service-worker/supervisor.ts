@@ -61,6 +61,8 @@ export function createSupervisor(deps: SupervisorDeps) {
         await rehydrate();
         await ensureRuntime();
         return { type: 'rehydrated' };
+      case 'cabot.event':
+        return { type: 'event-ignored' }; // UI broadcast; never forwarded
       default:
         // All runtime operations live in the offscreen coordinator.
         return forwardToRuntime(msg);

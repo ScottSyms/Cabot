@@ -58,6 +58,7 @@ export type CoordinatorMessage =
   | { type: 'cabot.resume-task'; taskId: string }
   | { type: 'cabot.cancel-task'; taskId: string }
   | { type: 'cabot.run-summary'; objective: string; projectName?: string }
+  | { type: 'cabot.send-message'; taskId: string; text: string }
   | { type: 'cabot.get-settings' }
   | { type: 'cabot.save-settings'; settings: ProviderSettings };
 
@@ -111,6 +112,34 @@ export function createCoordinator(deps: CoordinatorDeps) {
     );
   }
 
+  /** Broadcast a runtime event to extension UIs (panel refreshes on these). */
+  function emit(kind: string, taskId?: string, extra?: Record<string, unknown>): void {
+    try {
+      const g = globalThis as unknown as { chrome?: { runtime?: { sendMessage(m: unknown): void } } };
+      g.chrome?.runtime?.sendMessage({ type: 'cabot.event', kind, taskId, ...extra });
+    } catch {
+      // No listeners (e.g. tests) — safe to ignore.
+    }
+  }
+
+  async function continueTask(taskId: string): Promise<unknown> {
+    const { store: s, broker: b } = ready();
+    const task = s.tasks.get(taskId);
+    if (!task) throw new Error(`unknown task ${taskId}`);
+    const settings = await deps.settings.load();
+    if (!settings) throw new Error('provider not configured — open Settings first');
+    const provider = new OpenAICompatibleProvider({ endpoint: settings.endpoint, apiKey: settings.apiKey, modelId: settings.modelId });
+    const project = s.projects.get(task.projectId);
+    if (!project) throw new Error('project missing for task');
+    const executor = new BrowserToolExecutor(new ChromeBrowserBackend(), s, task.id, project.id);
+    const svc = new CabotRuntimeService(s, b, provider, executor);
+    const outcome = await svc.runTask(task.id, task.ownerAgentId, 25, () => persist().catch(() => {}));
+    await persist();
+    const status = (outcome as { status: string }).status;
+    emit(status === 'approval-required' ? 'approval-requested' : `task-${status}`, task.id, { outcome });
+    return { outcome };
+  }
+
   async function runSummary(objective: string, projectName = 'Research'): Promise<{ taskId: string; outcome: unknown }> {
     const { store: s, broker: b } = ready();
     const settings = await deps.settings.load();
@@ -134,6 +163,8 @@ export function createCoordinator(deps: CoordinatorDeps) {
     await persist();
     const outcome = await svc.runTask(task.id, agent.id, 25, () => persist().catch(() => {}));
     await persist();
+    const done = (outcome as { status: string }).status;
+    emit(done === 'approval-required' ? 'approval-requested' : `task-${done}`, task.id, { outcome });
     return { taskId: task.id, outcome };
   }
 
@@ -169,6 +200,12 @@ export function createCoordinator(deps: CoordinatorDeps) {
         return { ok: true };
       case 'cabot.run-summary':
         return runSummary(msg.objective, msg.projectName);
+      case 'cabot.send-message': {
+        queries.sendUserMessage(msg.taskId, msg.text);
+        await persist();
+        emit('user-message', msg.taskId);
+        return { taskId: msg.taskId, ...(await continueTask(msg.taskId) as Record<string, unknown>) };
+      }
       case 'cabot.get-settings':
         return { settings: await deps.settings.load() };
       case 'cabot.save-settings':

@@ -134,6 +134,27 @@ export class CabotRuntimeService {
     }
   }
 
+  /**
+   * Steer an agent mid-task: records a user message the next model turn
+   * will see via recent events. Rejects finished tasks. Wakes suspended,
+   * blocked, or interrupted tasks back to READY so the loop can continue.
+   */
+  sendUserMessage(taskId: TaskId, text: string): void {
+    const task = this.store.tasks.get(taskId);
+    if (!task) throw new Error(`unknown task ${taskId}`);
+    if (['COMPLETE', 'FAILED', 'CANCELLED'].includes(task.status)) {
+      throw new Error(`task ${task.status}; start a new task instead`);
+    }
+    const trimmed = text.trim().slice(0, 4000);
+    if (!trimmed) throw new Error('message is empty');
+    this.store.appendEvent(taskId, 'user.message', trimmed);
+    if (['SUSPENDED', 'BLOCKED', 'INTERRUPTED'].includes(task.status)) {
+      this.store.transitionTask(taskId, 'READY', 'resumed by user message');
+    } else {
+      this.store.commitCheckpoint(taskId);
+    }
+  }
+
   /** Run the checkpointed loop for a task (offscreen worker entry point). */
   async runTask(taskId: TaskId, agentId: AgentId, maxTurns = 25, onTurn?: () => void | Promise<void>) {
     const executor = this.executor ?? { execute: async () => ({ ok: true }) };

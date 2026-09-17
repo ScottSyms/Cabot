@@ -83,8 +83,7 @@ describe('approval inbox + inspection', () => {
     expect(executed).toEqual([]);
   });
 
-  it('granted approval resumes the loop and dispatches exactly once', async () => {
-    const { store, svc, agent, task, model, executed } = setup();
+  it('granted approval resumes the loop and dispatches exactly once', async () => {    const { store, svc, agent, task, model, executed } = setup();
     model.script(task.id, [
       { kind: 'tool', toolId: 'external.publish', args: { doc: 1 }, argsHash: 'h2', idempotencyKey: 'k2' },
     ]);
@@ -105,3 +104,43 @@ describe('approval inbox + inspection', () => {
     expect(executed).toEqual(['external.publish']);
   });
 });
+
+describe('user messages', () => {
+  it('records steering input the next model turn will see', async () => {
+    const { store, svc, agent, task, model } = setup();
+    model.script(task.id, [{ kind: 'done', summary: 'first pass' }]);
+    expect((await svc.runTask(task.id, agent.id)).status).toBe('complete');
+
+    // Finished tasks reject new input.
+    expect(() => svc.sendUserMessage(task.id, 'do more')).toThrow(/start a new task/);
+
+    // Reopen via a fresh task to check the message lands in context.
+    const task2 = store.createTask({ projectId: setup_projectId(store), ownerAgentId: agent.id, title: 'T2', objective: 'O2' });
+    store.transitionTask(task2.id, 'READY', 'r');
+    store.transitionTask(task2.id, 'RUNNING', 'r');
+    svc.sendUserMessage(task2.id, '  focus on prices  ');
+    const events = store.events.filter((e) => e.taskId === task2.id && e.type === 'user.message');
+    expect(events).toHaveLength(1);
+    expect(events[0].summary).toBe('focus on prices');
+    expect(() => svc.sendUserMessage(task2.id, '   ')).toThrow(/empty/);
+  });
+
+  it('wakes blocked tasks back to READY', async () => {
+    const { store, svc, agent, task, model } = setup();
+    model.script(task.id, [
+      { kind: 'tool', toolId: 'external.publish', args: { doc: 1 }, argsHash: 'h2', idempotencyKey: 'k2' },
+    ]);
+    const parked = await svc.runTask(task.id, agent.id, 3);
+    expect(parked.status).toBe('approval-required');
+    if (parked.status !== 'approval-required') throw new Error('expected gate');
+    svc.decideApproval(parked.approvalId, 'denied');
+    expect(store.tasks.get(task.id)?.status).toBe('BLOCKED');
+
+    svc.sendUserMessage(task.id, 'skip publishing, just summarize');
+    expect(store.tasks.get(task.id)?.status).toBe('READY');
+  });
+});
+
+function setup_projectId(store: DurableStore): string {
+  return [...store.projects.values()][0].id;
+}
