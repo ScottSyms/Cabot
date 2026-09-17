@@ -351,3 +351,48 @@ describe('budget management', () => {
     expect(seen?.budget?.modelCallsUsed).toBe(1);
   });
 });
+
+describe('stuck-agent detection', () => {
+  it('stops after repeated identical tool calls instead of burning budget', async () => {
+    const { store, broker, agent, task } = setup();
+    const model = new FakeModelProvider();
+    // Same tool and same args four times.
+    model.script(task.id, [
+      { kind: 'tool', toolId: 'notes.write', args: { n: 7 }, argsHash: 'same', idempotencyKey: 'k1' },
+      { kind: 'tool', toolId: 'notes.write', args: { n: 7 }, argsHash: 'same', idempotencyKey: 'k2' },
+      { kind: 'tool', toolId: 'notes.write', args: { n: 7 }, argsHash: 'same', idempotencyKey: 'k3' },
+      { kind: 'tool', toolId: 'notes.write', args: { n: 7 }, argsHash: 'same', idempotencyKey: 'k4' },
+      { kind: 'done', summary: 'should never run' },
+    ]);
+    let executed = 0;
+    const executor: ToolExecutor = {
+      execute: async () => {
+        executed += 1;
+        return { ok: true, resultHash: 'r' };
+      },
+    };
+    const svc = new CabotRuntimeService(store, broker, model, executor);
+    const outcome = await svc.runTask(task.id, agent.id, 10);
+    expect(outcome.status).toBe('suspended');
+    expect(store.tasks.get(task.id)?.status).toBe('SUSPENDED');
+    // Three dispatched, fourth stopped before dispatch.
+    expect(executed).toBe(3);
+    const blocked = store.events.filter((e) => e.taskId === task.id && e.summary.includes('unchanged arguments'));
+    expect(blocked).toHaveLength(1);
+    expect(store.forTaskConversation(task.id).some((m) => m.text.includes('Stopped:'))).toBe(true);
+  });
+
+  it('allows the same tool with different arguments', async () => {
+    const { store, broker, agent, task } = setup();
+    const model = new FakeModelProvider();
+    model.script(task.id, [
+      { kind: 'tool', toolId: 'notes.write', args: { n: 1 }, argsHash: 'a', idempotencyKey: 'k1' },
+      { kind: 'tool', toolId: 'notes.write', args: { n: 2 }, argsHash: 'b', idempotencyKey: 'k2' },
+      { kind: 'tool', toolId: 'notes.write', args: { n: 3 }, argsHash: 'c', idempotencyKey: 'k3' },
+      { kind: 'tool', toolId: 'notes.write', args: { n: 4 }, argsHash: 'd', idempotencyKey: 'k4' },
+      { kind: 'done', summary: 'fine' },
+    ]);
+    const svc = new CabotRuntimeService(store, broker, model, { execute: async () => ({ ok: true }) });
+    expect((await svc.runTask(task.id, agent.id, 10)).status).toBe('complete');
+  });
+});

@@ -160,6 +160,12 @@ export function fileSettingsStore(snapshots: SnapshotBackend): SettingsStore {
   };
 }
 
+/** Safety turn cap aligned with the model-call budget so budget is the real
+ *  limit; the cap only prevents an unbounded loop when no budget is set. */
+export function turnCapFor(agent: { budget: { maxModelCalls?: number } }): number {
+  return Math.max(25, (agent.budget.maxModelCalls ?? DEFAULT_BUDGET.maxModelCalls) + 2);
+}
+
 export function createCoordinator(deps: CoordinatorDeps) {
   let store: DurableStore | undefined;
   let broker: CapabilityBroker | undefined;
@@ -279,7 +285,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
       svc.runTask(
         task.id,
         task.ownerAgentId,
-        25,
+        turnCapFor(s.agents.get(task.ownerAgentId) ?? { budget: {} }),
         () => {
           // Per-turn: persist, then tell UIs to refresh (selection, drafts,
           // and scroll are preserved panel-side).
@@ -320,7 +326,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
       svc.runTask(
         task.id,
         agent.id,
-        25,
+        turnCapFor(agent),
         () => {
           emit('task-progress', task.id);
           return persist().catch(() => {});

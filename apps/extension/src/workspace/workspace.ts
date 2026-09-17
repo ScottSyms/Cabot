@@ -187,11 +187,54 @@ export function renderWorkspace(root: HTMLElement, client: PanelClient): { refre
       return;
     }
     const d = state.detail;
+    const reason = stopReason(d);
+    if (reason) content.append(banner(reason, view));
     if (state.tab === 'conversation') renderConversation(content, d.conversation);
     else if (state.tab === 'activity') renderActivity(content, d);
     else if (state.tab === 'sources') renderSources(content, d);
     else renderFiles(content, d);
     if (stick) content.scrollTop = content.scrollHeight;
+  }
+
+  /** Why is this parked? Prefer the last blocking event over a generic label. */
+  function stopReason(detail: TaskDetail): { status: string; text: string; kind: string } | null {
+    const status = detail.task.status;
+    if (!['SUSPENDED', 'BLOCKED', 'INTERRUPTED', 'APPROVAL_REQUIRED'].includes(status)) return null;
+    for (const e of [...detail.events].reverse()) {
+      if (e.type === 'task.blocked' || e.type === 'model.failed' || e.type === 'approval.requested') {
+        return { status, text: e.summary, kind: e.type === 'approval.requested' ? 'approval' : 'blocked' };
+      }
+    }
+    const fallback: Record<string, string> = {
+      SUSPENDED: 'Paused.',
+      BLOCKED: 'Blocked pending review.',
+      INTERRUPTED: 'Interrupted by a runtime restart; resumable.',
+      APPROVAL_REQUIRED: 'Waiting for your approval.',
+    };
+    return { status, text: fallback[status] ?? status, kind: status === 'APPROVAL_REQUIRED' ? 'approval' : 'blocked' };
+  }
+
+  function banner(reason: { status: string; text: string; kind: string }, view: AgentView): HTMLElement {
+    const box = el('div', undefined, { class: `banner banner-${reason.kind}` });
+    box.append(el('strong', `Paused — ${reason.text}`));
+    const row = el('div', undefined, { class: 'banner-actions' });
+    if (reason.kind === 'blocked' && view.task) {
+      const resume = el('button', 'Resume', { class: 'good' });
+      resume.onclick = () => act({ type: 'cabot.resume-task', taskId: view.task!.id });
+      row.append(resume);
+    }
+    if (reason.status === 'APPROVAL_REQUIRED') {
+      row.append(el('span', 'Resolve it in the approval card below.', { class: 'muted' }));
+    }
+    if (resumeHint(reason)) row.append(el('span', resumeHint(reason)!, { class: 'muted' }));
+    box.append(row);
+    return box;
+  }
+
+  function resumeHint(reason: { status: string; text: string }): string | null {
+    if (/budget exhausted/.test(reason.text)) return 'Use “Continue with more budget” to extend the limit.';
+    if (/repeated .* unchanged arguments/.test(reason.text)) return 'Send a message with new guidance to continue.';
+    return null;
   }
 
   function select(agentId: string): void {

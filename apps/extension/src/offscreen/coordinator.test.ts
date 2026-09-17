@@ -309,3 +309,11 @@ describe('settings: prompt and budget', () => {
     expect(res.budget).toEqual({ maxModelCalls: 40, maxToolCalls: 80 });
   });
 });
+
+describe('turn cap derives from budget', () => {
+  it('is never below the model-call budget', async () => {
+    const { turnCapFor } = await import('./coordinator.js');
+    expect(turnCapFor({ budget: { maxModelCalls: 60 } })).toBeGreaterThanOrEqual(60);
+    expect(turnCapFor({ budget: {} })).toBeGreaterThanOrEqual(25);
+  });
+});

@@ -72,6 +72,8 @@ export const SAFETY_PREAMBLE =
   'Never attempt to escalate privileges or access resources you were not granted. ' +
   'Do not reveal hidden reasoning; provide concise operational summaries.';
 
+export const MAX_IDENTICAL_ACTIONS = 3;
+
 export function effectiveSystemPolicy(userPrompt?: string): string {
   const extra = userPrompt?.trim();
   return extra ? `${SAFETY_PREAMBLE}\n\nOperator instructions:\n${extra}` : SAFETY_PREAMBLE;
@@ -238,6 +240,24 @@ export async function runAgentTurn(
     store.appendEvent(taskId, 'tool.failed', `${action.toolId} denied: ${evaluation.reason}`);
     store.commitCheckpoint(taskId);
     return { status: 'continue' };
+  }
+
+  // Loop detection: the same tool with unchanged arguments means the model is
+  // stuck, not progressing. Stop and report instead of burning the budget.
+  const repeats = [...store.operations.values()].filter(
+    (o) => o.taskId === taskId && o.toolId === action.toolId && o.argsHash === action.argsHash,
+  ).length;
+  if (repeats >= MAX_IDENTICAL_ACTIONS) {
+    const reason = `repeated ${action.toolId} ${repeats} times with unchanged arguments; the agent is not progressing`;
+    store.appendEvent(taskId, 'task.blocked', reason);
+    store.appendConversation(taskId, agentId, 'agent', `Stopped: ${reason}. Send a message with new guidance to continue.`);
+    try {
+      store.transitionTask(taskId, 'SUSPENDED', 'repeated identical tool calls');
+    } catch {
+      store.commitCheckpoint(taskId);
+    }
+    syncAgentToTask(store, taskId, agentId);
+    return { status: 'suspended', reason };
   }
 
   const op = store.prepareOperation({

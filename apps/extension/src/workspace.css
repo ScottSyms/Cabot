@@ -274,3 +274,16 @@ section.approvals { border-color: var(--warn); }
   font: inherit;
   resize: vertical;
 }
+
+.banner {
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--panel);
+}
+.banner-blocked { border: 1px solid var(--warn); }
+.banner-approval { border: 1px solid var(--accent); }
+.banner-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
