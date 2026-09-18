@@ -194,3 +194,25 @@ describe('tool result context', () => {
     expect(joined).toContain('[tool result: browser.read_page failed] Cannot access chrome:// pages');
   });
 });
+
+describe('tool schemas', () => {
+  it('sends each tool parameter schema so the model can type arguments', async () => {
+    const { calls } = stubFetch({ choices: [{ message: { content: 'done' }, finish_reason: 'stop' }] });
+    const provider = new OpenAICompatibleProvider({ endpoint: 'http://localhost:11434/v1', modelId: 'm' });
+    await provider.decide({
+      ...baseRequest,
+      tools: [
+        {
+          id: 'browser.read_page',
+          description: 'read a page',
+          inputSchema: { type: 'object', properties: { tabId: { type: 'string' } }, required: [] },
+        },
+      ],
+    });
+    const sent = JSON.parse(calls[0].init.body as string) as {
+      tools: { function: { name: string; parameters: { properties?: Record<string, unknown> } } }[];
+    };
+    expect(sent.tools[0].function.name).toBe('browser.read_page');
+    expect(sent.tools[0].function.parameters.properties).toHaveProperty('tabId');
+  });
+});

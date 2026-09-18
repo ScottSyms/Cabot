@@ -18,7 +18,7 @@ export interface ModelRequest {
   systemPolicy: string;
   objective: string;
   planRevision: number;
-  tools: { id: string; description: string }[];
+  tools: { id: string; description: string; inputSchema?: Record<string, unknown> }[];
   recentEvents: { type: string; summary: string }[];
   /** Recent user/agent transcript (capped by the caller). */
   recentConversation?: { role: 'user' | 'agent'; text: string }[];

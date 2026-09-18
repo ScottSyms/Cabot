@@ -37,6 +37,16 @@ export function isReadableWebUrl(url: string | undefined): boolean {
   return typeof url === 'string' && /^https?:\/\//i.test(url);
 }
 
+/**
+ * Model-supplied ids arrive as whatever JSON type the model chose (number,
+ * string, null). Normalize to a trimmed non-empty string or undefined.
+ */
+export function normTabId(tabId: unknown): string | undefined {
+  if (tabId === undefined || tabId === null) return undefined;
+  const s = String(tabId).trim();
+  return s === '' || s === '0' ? undefined : s;
+}
+
 function originOf(url: string): string {
   try {
     return new URL(url).origin;
@@ -84,10 +94,10 @@ export class ChromeBrowserBackend implements BrowserBackend {
   private async resolveWebTabId(tabId?: string): Promise<number> {
     const { tabs } = chromeApi();
     const raw = await tabs.query({});
-    const norm = tabId?.trim();
+    const norm = normTabId(tabId);
     if (norm) {
       const n = Number(norm);
-      if (!Number.isFinite(n)) throw new Error(`invalid tab id ${tabId}`);
+      if (!Number.isFinite(n)) throw new Error(`invalid tab id ${String(tabId)}`);
       const t = raw.find((x) => x.id === n);
       if (!t) throw new Error(`no tab with id ${n}`);
       if (!isReadableWebUrl(t.url)) {
@@ -141,9 +151,9 @@ export class ChromeBrowserBackend implements BrowserBackend {
    * usable web tab. Refuses non-web URLs outright.
    */
   async navigate(url: string, tabId?: string): Promise<TabInfo> {
-    if (!isReadableWebUrl(url)) throw new Error(`refusing to navigate to non-web URL ${url}`);
+    if (!isReadableWebUrl(url)) throw new Error(`refusing to navigate to non-web URL ${String(url)}`);
     const { tabs } = chromeApi();
-    const norm = tabId?.trim();
+    const norm = normTabId(tabId);
     let targetId: number | undefined;
     if (norm) {
       const n = Number(norm);
@@ -163,13 +173,13 @@ export class ChromeBrowserBackend implements BrowserBackend {
 
   async goBack(tabId?: string): Promise<void> {
     const { tabs } = chromeApi();
-    const norm = tabId?.trim();
+    const norm = normTabId(tabId);
     await tabs.goBack(norm ? Number(norm) : undefined);
   }
 
   async goForward(tabId?: string): Promise<void> {
     const { tabs } = chromeApi();
-    const norm = tabId?.trim();
+    const norm = normTabId(tabId);
     await tabs.goForward(norm ? Number(norm) : undefined);
   }
 

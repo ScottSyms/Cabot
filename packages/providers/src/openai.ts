@@ -58,7 +58,13 @@ export class OpenAICompatibleProvider implements ModelProvider {
       ],
       tools: request.tools.map((t) => ({
         type: 'function',
-        function: { name: t.id, description: t.description, parameters: { type: 'object' } },
+        function: {
+          name: t.id,
+          description: t.description,
+          // Send the real parameter schema so the model calls tools with
+          // correctly-typed arguments instead of guessing.
+          parameters: t.inputSchema ?? { type: 'object', properties: {} },
+        },
       })),
       tool_choice: 'auto' as const,
     };

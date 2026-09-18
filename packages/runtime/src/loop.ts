@@ -169,7 +169,7 @@ export async function runAgentTurn(
       systemPolicy: effectiveSystemPolicy(options.systemPrompt),
       objective: task.objective,
       planRevision: task.planRevision,
-      tools: [...broker.tools.values()].map((t) => ({ id: t.id, description: t.description })),
+      tools: [...broker.tools.values()].map((t) => ({ id: t.id, description: t.description, inputSchema: t.inputSchema })),
       recentEvents: recentEvents
         .filter((e) => !['tool.requested', 'tool.started', 'tool.completed', 'tool.failed'].includes(e.type))
         .map((e) => ({ type: e.type, summary: e.summary })),

@@ -28,9 +28,10 @@ export class FakeBrowserBackend implements BrowserBackend {
   }
 
   private resolve(tabId?: string): string {
-    if (tabId) {
-      if (!this.pages.has(tabId)) throw new Error(`unknown tab ${tabId}`);
-      return tabId;
+    const norm = tabId === undefined || tabId === null ? '' : String(tabId).trim();
+    if (norm) {
+      if (!this.pages.has(norm)) throw new Error(`unknown tab ${norm}`);
+      return norm;
     }
     if (this.tabs.length === 0) throw new Error('no tabs open');
     return this.tabs[0].id;
