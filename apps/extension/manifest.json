@@ -11,7 +11,7 @@
   "side_panel": {
     "default_path": "dist/sidepanel.html"
   },
-  "permissions": ["sidePanel", "alarms", "storage", "offscreen", "tabs", "scripting", "activeTab", "contextMenus", "unlimitedStorage"],
+  "permissions": ["sidePanel", "alarms", "storage", "offscreen", "tabs", "tabGroups", "scripting", "activeTab", "contextMenus", "unlimitedStorage"],
   "host_permissions": ["https://*/*", "http://*/*"],
   "offscreen_documents": [],
   "content_security_policy": {

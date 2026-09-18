@@ -11,25 +11,50 @@ interface RawTab {
   id?: number;
   url?: string;
   title?: string;
+  status?: string;
 }
 
 interface ChromeTabs {
   query(q: Record<string, unknown>): Promise<RawTab[]>;
-  update(tabId: number, props: { url: string }): Promise<RawTab>;
-  create(props: { url: string }): Promise<RawTab>;
+  get(tabId: number): Promise<RawTab>;
+  update(tabId: number, props: { url: string; active?: boolean }): Promise<RawTab>;
+  create(props: { url: string; active?: boolean }): Promise<RawTab>;
+  group(opts: { tabIds: number[]; groupId?: number }): Promise<number>;
   goBack(tabId?: number): Promise<void>;
   goForward(tabId?: number): Promise<void>;
+}
+interface ChromeTabGroups {
+  update(groupId: number, props: { title?: string; color?: string }): Promise<unknown>;
 }
 interface ChromeScripting {
   executeScript(opts: { target: { tabId: number }; func: () => unknown }): Promise<{ result: unknown }[]>;
 }
 
-function chromeApi(): { tabs: ChromeTabs; scripting: ChromeScripting } {
-  const g = globalThis as unknown as { chrome?: { tabs?: ChromeTabs; scripting?: ChromeScripting } };
+function chromeApi(): { tabs: ChromeTabs; tabGroups?: ChromeTabGroups; scripting: ChromeScripting } {
+  const g = globalThis as unknown as {
+    chrome?: { tabs?: ChromeTabs; tabGroups?: ChromeTabGroups; scripting?: ChromeScripting };
+  };
   if (!g.chrome?.tabs || !g.chrome?.scripting) {
     throw new Error('chrome tabs/scripting APIs unavailable in this context');
   }
-  return { tabs: g.chrome.tabs, scripting: g.chrome.scripting };
+  return { tabs: g.chrome.tabs, tabGroups: g.chrome.tabGroups, scripting: g.chrome.scripting };
+}
+
+const GROUP_ADJECTIVES = ['Amber', 'Cobalt', 'Violet', 'Rust', 'Jade', 'Indigo', 'Copper', 'Azure', 'Crimson', 'Sage', 'Onyx', 'Lilac'];
+const GROUP_NOUNS = ['Otter', 'Falcon', 'Fox', 'Heron', 'Lynx', 'Marten', 'Osprey', 'Panda', 'Quail', 'Raven', 'Wolf', 'Wren'];
+export const GROUP_COLORS = ['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'];
+
+function pick<T>(list: T[]): T {
+  return list[Math.floor(Math.random() * list.length)];
+}
+
+/** Random, human-readable tab-group name, e.g. "Amber Otter". */
+export function randomGroupName(): string {
+  return `${pick(GROUP_ADJECTIVES)} ${pick(GROUP_NOUNS)}`;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** A tab the agent may read or act on: an ordinary http(s) web page. */
@@ -69,6 +94,45 @@ function readableTabs(raw: RawTab[]): RawTab[] {
 }
 
 export class ChromeBrowserBackend implements BrowserBackend {
+  private groupId?: number;
+  private readonly groupName = randomGroupName();
+  private readonly groupColor = pick(GROUP_COLORS);
+
+  /**
+   * Put an agent-opened tab into a single named group, created on first use.
+   * Best-effort: grouping never fails a navigation.
+   */
+  private async ensureGroup(tabId: number): Promise<void> {
+    try {
+      const { tabs, tabGroups } = chromeApi();
+      if (!tabGroups) return;
+      if (this.groupId === undefined) {
+        this.groupId = await tabs.group({ tabIds: [tabId] });
+        await tabGroups.update(this.groupId, { title: this.groupName, color: this.groupColor });
+      } else {
+        await tabs.group({ tabIds: [tabId], groupId: this.groupId });
+      }
+    } catch {
+      // Grouping is cosmetic; navigation must still succeed.
+    }
+  }
+
+  /** Wait until the tab finishes loading so a subsequent read sees real content. */
+  private async waitForComplete(tabId: number, timeoutMs = 10_000): Promise<void> {
+    const { tabs } = chromeApi();
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      try {
+        const t = await tabs.get(tabId);
+        if (!t || t.status === 'complete') return;
+      } catch {
+        return;
+      }
+      if (Date.now() >= deadline) return;
+      await delay(200);
+    }
+  }
+
   async listTabs(): Promise<TabInfo[]> {
     const { tabs } = chromeApi();
     return readableTabs(await tabs.query({})).map(toInfo);
@@ -147,28 +211,38 @@ export class ChromeBrowserBackend implements BrowserBackend {
   }
 
   /**
-   * Navigate a web tab, or open a new one when the requested target is not a
-   * usable web tab. Refuses non-web URLs outright.
+   * Navigate a web tab, or open a new background tab when no usable target is
+   * given. Agent-opened tabs are placed in a named group so the user's own
+   * browsing is not disturbed or mixed with the agent's.
    */
   async navigate(url: string, tabId?: string): Promise<TabInfo> {
     if (!isReadableWebUrl(url)) throw new Error(`refusing to navigate to non-web URL ${String(url)}`);
     const { tabs } = chromeApi();
     const norm = normTabId(tabId);
-    let targetId: number | undefined;
+    let tab: RawTab | undefined;
     if (norm) {
       const n = Number(norm);
       if (Number.isFinite(n)) {
-        const t = (await tabs.query({})).find((x) => x.id === n);
-        if (t && isReadableWebUrl(t.url)) targetId = n;
+        const existing = (await tabs.query({})).find((x) => x.id === n);
+        if (existing && isReadableWebUrl(existing.url)) tab = await tabs.update(n, { url });
       }
-    } else {
-      const active = (await tabs.query({ active: true, lastFocusedWindow: true })).find((t) =>
-        isReadableWebUrl(t.url),
-      );
-      if (active?.id !== undefined) targetId = active.id;
     }
-    const t = targetId !== undefined ? await tabs.update(targetId, { url }) : await tabs.create({ url });
-    return toInfo(t);
+    let created = false;
+    if (!tab) {
+      // active:false keeps the user's current tab focused.
+      tab = await tabs.create({ url, active: false });
+      created = true;
+    }
+    if (tab.id !== undefined) {
+      if (created) await this.ensureGroup(tab.id);
+      await this.waitForComplete(tab.id);
+      try {
+        tab = await tabs.get(tab.id);
+      } catch {
+        // Keep the create/update response if the refresh fails.
+      }
+    }
+    return toInfo(tab);
   }
 
   async goBack(tabId?: string): Promise<void> {
