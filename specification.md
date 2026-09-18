@@ -1,10 +1,14 @@
 # Cabot — Browser-Native Autonomous Agent Runtime
 
 **Document:** Product and Technical Specification  
-**Status:** Draft 0.3  
-**Date:** 2026-09-16  
+**Status:** Draft 0.4  
+**Date:** 2026-09-18  
 **Target:** Chromium / Microsoft Edge Manifest V3 extension  
-**Codename/Product name:** Cabot
+**Codename/Product name:** Cabot  
+
+> See **Appendix A — Implementation Status** for what is built, the
+> decisions taken during implementation, and deviations from this document.
+> The appendix is descriptive; the numbered sections remain normative.
 
 ---
 
@@ -2155,3 +2159,144 @@ Cabot is a browser-native agent workbench with four defining characteristics:
 4. **Contained** — the browser sandbox and Capability Broker remain authoritative; neither the model nor executable Skill code receives ambient extension or host privileges.
 
 The intended result is a system with much of the practical power of a general-purpose autonomous agent harness, but whose default execution boundary is the browser rather than the host operating system.
+
+---
+
+# Appendix A — Implementation Status
+
+**As of:** 2026-09-18  
+**Nature:** Descriptive. The numbered sections remain normative; this appendix
+records what is actually built, the decisions taken, and where the
+implementation deviates.
+
+## A.1 Repository layout
+
+| Package / app | Responsibility | Status |
+|---|---|---|
+| `packages/contracts` | Durable entities, task/agent lifecycles, tool and capability types | Implemented |
+| `packages/storage` | `DurableStore` transaction engine, SQLite (Node) persistence, OPFS snapshot/artifact persistence | Implemented |
+| `packages/policy` | Capability Broker (authorization boundary) | Implemented |
+| `packages/runtime` | Checkpointed agent loop, `CabotRuntimeService`, inspection queries | Implemented |
+| `packages/providers` | Provider contract, fake provider, OpenAI-compatible adapter | Implemented |
+| `packages/tools` | Browser tools, workspace file tools, Chrome/fake/relay backends | Implemented |
+| `packages/compute` | JS sandbox, `python.execute`, dev/fake Python backends | Implemented |
+| `packages/skills` | Skill manifest validation, registry, entry-point invocation | Implemented |
+| `apps/extension` | MV3 supervisor, offscreen coordinator, side panel, workspace page | Implemented (preview) |
+
+Verification at this revision: 127 automated tests, strict TypeScript
+typecheck clean, extension bundle builds. No MCP or WebMCP package exists yet.
+
+## A.2 Phase status (relative to §28)
+
+- **Phase 1 — Durable Core:** implemented. Task state machine, event journal,
+  checkpoints, operation lifecycle, recovery, service-worker supervisor,
+  offscreen coordinator, one remote provider, read-only browser tools.
+- **Phase 2 — Capability Broker and Browser Agent:** largely implemented.
+  Tool registry, capability policies, approval inbox, navigation and
+  write-path tools, semantic element handles with stale-target checks,
+  artifact workspace, task dashboard.
+- **Phase 3 — Compute Runtime:** partially implemented. `python.execute`,
+  package policy, artifact capture, and a sandboxed JS executor exist; the
+  Pyodide browser backend and DuckDB/SQL tool are not wired into the
+  extension.
+- **Phase 4 — Skills:** core implemented (format, registry, entry points,
+  invocation); not yet exposed in the extension UI.
+- **Phase 5 — MCP:** not implemented.
+- **Phase 6 — WebMCP:** not implemented.
+- **Phase 7 — Multi-Agent and Local Models:** partially implemented. Agent,
+  mailbox, queue, and delegation data models and the brokered `agent.spawn`
+  path exist; there is no scheduler driver, and no WebGPU/local model
+  provider.
+
+## A.3 Decisions and deviations
+
+### A.3.1 Browser persistence uses OPFS, not SQLite-WASM
+
+The extension persists durable state as a single OPFS JSON snapshot
+(`store.json`) and artifact bytes as OPFS blobs. The SQLite layout in §7.4 is
+implemented and used by Node tests (`node:sqlite`), and remains the intended
+migration target for the Storage Worker. `chrome.storage` was tried first and
+proved unavailable in the offscreen context in practice; OPFS is used
+uniformly instead.
+
+Consequences: whole-store snapshot writes rather than row-level transactions;
+per-task conversation caps (500) and a global cap (5,000) bound snapshot size.
+
+### A.3.2 Compute isolation
+
+The JS sandbox (`packages/compute`) is a Node spike proving the interface:
+no host access, scoped inputs, captured output, timeout enforced by context
+termination. It is explicitly **not** the browser security boundary. The
+browser target is Pyodide inside a sandboxed, separate-origin context
+(ADR-001), which is not yet built. The dev-only subprocess Python backend is
+never bundled (`dist/` contains no `node:` imports).
+
+### A.3.3 Tool surface additions
+
+The following tools exist beyond the list in §10:
+
+- `workspace.write`, `workspace.read`, `workspace.list` — durable task files
+  (reports, data) persisted as verified artifacts and surfaced in the Files
+  view.
+- `browser.submit` is classified consequential and always approval-gated;
+  `browser.click`, `type`, `select`, `scroll` are external-mutation and are
+  not granted to research tasks by default.
+- `python.execute` and `skill.<name>.<entrypoint>` per §13–14.
+
+### A.3.4 Agent-opened tabs are background and grouped
+
+`browser.navigate` with no `tabId` opens a tab with `active: false` and adds
+it to a randomly named tab group, so agent activity does not disturb the
+user's browsing. Only `http(s)` pages are exposed; `chrome://`,
+`chrome-extension://`, `file://`, and similar schemes are refused. Navigation
+waits (bounded) for the tab to finish loading before returning.
+
+### A.3.5 Budget management
+
+Budgets are configurable per task (defaults 60 model calls, 150 tool calls).
+Exhaustion suspends the task rather than stalling it, and the model is given
+its remaining budget each turn with guidance to conclude when low. An
+explicit "continue with more budget" action raises the limits; limits are
+never reduced by that action. A safety turn cap is derived from the model-call
+budget so it never binds below it.
+
+### A.3.6 Exposed system prompt
+
+Operator behavior instructions are configurable and appended to a fixed,
+non-editable safety preamble (least privilege, approval for consequential
+actions, treat retrieved content as untrusted data, no hidden reasoning).
+
+### A.3.7 Continuations and recovery
+
+A message to a finished task starts a **follow-up**: a new task owned by the
+same agent, with cloned capability grants, seeded transcript context, and a
+fresh step budget. On runtime restart, interrupted tasks with no uncertain
+operation resume automatically; those with an uncertain external effect are
+parked `BLOCKED` for review.
+
+### A.3.8 Reliability behaviors
+
+- Transient model-call failures retry with bounded backoff; permanent 4xx
+  failures do not.
+- Tool results, including denials and errors, are fed back to the model so it
+  can act on them; a model that repeats an identical action or an ungranted
+  tool is stopped with an explanatory reason.
+- Tool parameter schemas are sent to the model.
+
+## A.4 Known gaps
+
+- Multi-agent scheduling, concurrency limits, and the delegation UI.
+- MCP client, MCP Tasks extension, and WebMCP adapter.
+- Pyodide/DuckDB browser compute and Skill execution in the extension.
+- Token and monetary budgets (need provider usage capture).
+- Per-project memory and retrieval; embeddings.
+- Domain-scoped permission policy and a site-permission UI.
+- Export/import of tasks and settings.
+
+## A.5 Acceptance criteria assessment (§29)
+
+Satisfied or partially satisfied: 1–6, 8–14, 18 (projects, sourced research,
+OPFS artifacts, resumption, capability brokering, inspection, approvals,
+concurrent durable agents). Not yet demonstrated end-to-end: 7 and 15–17
+(MCP, WebMCP, and the full delegation round-trip), which depend on the
+unbuilt phases above.
