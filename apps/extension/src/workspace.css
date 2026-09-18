@@ -287,3 +287,17 @@ section.approvals { border-color: var(--warn); }
 .banner-blocked { border: 1px solid var(--warn); }
 .banner-approval { border: 1px solid var(--accent); }
 .banner-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+.modal-wide { width: min(760px, 94vw); }
+.artifact-view {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  max-height: 60vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/1.5 ui-monospace, monospace;
+  margin: 8px 0;
+}

@@ -198,7 +198,7 @@ export function renderWorkspace(root: HTMLElement, client: PanelClient): { refre
     if (state.tab === 'conversation') renderConversation(content, d.conversation);
     else if (state.tab === 'activity') renderActivity(content, d);
     else if (state.tab === 'sources') renderSources(content, d);
-    else renderFiles(content, d);
+    else renderFiles(content, d, (id) => openArtifact(id));
     if (stick) content.scrollTop = content.scrollHeight;
   }
 
@@ -241,6 +241,26 @@ export function renderWorkspace(root: HTMLElement, client: PanelClient): { refre
     if (/budget exhausted/.test(reason.text)) return 'Use “Continue with more budget” to extend the limit.';
     if (/repeated .* unchanged arguments/.test(reason.text)) return 'Send a message with new guidance to continue.';
     return null;
+  }
+
+  /** Open a written file's contents in a read-only viewer. */
+  function openArtifact(artifactId: string): void {
+    checked(client.send<{ artifact: { path: string; content: string; truncated: boolean } }>({ type: 'cabot.read-artifact', artifactId }))
+      .then(({ artifact }) => {
+        const overlay = el('div', undefined, { class: 'modal-overlay' });
+        const dialog = el('div', undefined, { class: 'modal modal-wide' });
+        dialog.append(el('h3', artifact.path));
+        const pre = el('pre', artifact.content + (artifact.truncated ? '\n… (truncated)' : ''), { class: 'artifact-view' });
+        const close = el('button', 'Close', { class: 'secondary' });
+        close.onclick = () => overlay.remove();
+        dialog.append(pre, close);
+        overlay.append(dialog);
+        overlay.onclick = (e) => {
+          if (e.target === overlay) overlay.remove();
+        };
+        document.body.append(overlay);
+      })
+      .catch((e) => setStatus(`could not open file: ${errorText(e)}`));
   }
 
   function select(agentId: string): void {

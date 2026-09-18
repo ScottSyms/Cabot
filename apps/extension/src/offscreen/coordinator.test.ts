@@ -323,6 +323,7 @@ describe('default research grants', () => {
     const { RESEARCH_GRANTS } = await import('./coordinator.js');
     expect(RESEARCH_GRANTS).toContain('browser.navigate');
     expect(RESEARCH_GRANTS).toContain('browser.read_page');
+    expect(RESEARCH_GRANTS).toContain('workspace.write');
     expect(RESEARCH_GRANTS).not.toContain('browser.click');
     expect(RESEARCH_GRANTS).not.toContain('browser.type');
     expect(RESEARCH_GRANTS).not.toContain('browser.submit');
@@ -372,5 +373,69 @@ describe('continuation from a completed task', () => {
     expect(followUp.status).toBe('COMPLETE');
     expect(s.agents.get(agent.id)!.spent.modelCalls).toBe(1); // fresh budget, one new call
     expect(s.tasks.get(task.id)!.status).toBe('COMPLETE'); // original untouched
+  });
+});
+
+class MemoryBlobs {
+  staged = new Map<string, Uint8Array>();
+  published = new Map<string, Uint8Array>();
+  async writeStaged(id: string, bytes: Uint8Array): Promise<void> {
+    this.staged.set(id, bytes);
+  }
+  async publish(id: string): Promise<void> {
+    const b = this.staged.get(id)!;
+    this.published.set(id, b);
+    this.staged.delete(id);
+  }
+  async read(id: string): Promise<Uint8Array> {
+    return this.published.get(id)!;
+  }
+  async listOrphanStaged(): Promise<string[]> {
+    return [...this.staged.keys()];
+  }
+}
+
+describe('agent writes a file', () => {
+  it('persists the file as an artifact and serves its contents', async () => {
+    const { FakeModelProvider } = await import('@cabot/providers');
+    const snapshots = new MemorySnapshotBackend();
+    const provider = new FakeModelProvider();
+    const blobs = new MemoryBlobs();
+    const coord = createCoordinator({
+      snapshots,
+      settings: settings(),
+      browserBackend: new FakeBrowserBackend(),
+      providerFactory: () => provider,
+      blobs,
+    });
+    await coord.boot();
+    const s = coord.ready().store;
+    const project = s.createProject('P');
+    const agent = s.createAgent({
+      projectId: project.id, role: 'researcher', objective: 'o', status: 'RUNNING',
+      modelConfig: { providerId: 'fake', modelId: 'fake-1' }, skillIds: [],
+      budget: { maxModelCalls: 20, maxToolCalls: 20 }, workspaceMounts: [], delegationDepth: 0,
+    });
+    const task = s.createTask({ projectId: project.id, ownerAgentId: agent.id, title: 'T', objective: 'summarize to a file' });
+    s.transitionTask(task.id, 'READY', 'r');
+    s.transitionTask(task.id, 'RUNNING', 'r');
+    s.grants.set('g1', {
+      id: 'g1', principal: { kind: 'core-agent', agentId: agent.id },
+      toolId: 'workspace.write', scope: 'task', taskId: task.id,
+    });
+    provider.script(task.id, [
+      { kind: 'tool', toolId: 'workspace.write', args: { path: 'summary.md', content: '# Summary' }, argsHash: 'h', idempotencyKey: 'k' },
+      { kind: 'done', summary: 'wrote the file' },
+    ]);
+
+    await coord.handleMessage({ type: 'cabot.send-message', taskId: task.id, text: 'save it to a file' });
+
+    const arts = [...s.artifacts.values()].filter((a) => a.taskId === task.id && !a.staged);
+    expect(arts.map((a) => a.path)).toEqual(['summary.md']);
+    const read = (await coord.handleMessage({ type: 'cabot.read-artifact', artifactId: arts[0].id })) as {
+      artifact: { path: string; content: string };
+    };
+    expect(read.artifact.path).toBe('summary.md');
+    expect(read.artifact.content).toBe('# Summary');
   });
 });

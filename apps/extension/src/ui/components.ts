@@ -138,14 +138,28 @@ export function renderSources(container: HTMLElement, detail: TaskDetail): void 
   container.append(list);
 }
 
-export function renderFiles(container: HTMLElement, detail: TaskDetail): void {
+export function renderFiles(
+  container: HTMLElement,
+  detail: TaskDetail,
+  onOpen?: (artifactId: string) => void,
+): void {
   container.innerHTML = '';
   if (detail.artifacts.length === 0) {
     container.append(el('p', 'Files the agent produces appear here.', { class: 'muted' }));
     return;
   }
   const list = el('ul');
-  for (const a of detail.artifacts) list.append(el('li', `${a.path} (${a.bytes} bytes)`, { class: 'mono' }));
+  for (const a of detail.artifacts) {
+    const li = el('li');
+    if (onOpen) {
+      const b = el('button', `${a.path} (${a.bytes} bytes)`, { class: 'secondary' });
+      b.onclick = () => onOpen(a.id);
+      li.append(b);
+    } else {
+      li.append(el('span', `${a.path} (${a.bytes} bytes)`, { class: 'mono' }));
+    }
+    list.append(li);
+  }
   container.append(list);
 }
 

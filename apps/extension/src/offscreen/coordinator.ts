@@ -6,6 +6,7 @@ import {
   DurableStore,
   restoreStore,
   serializeStore,
+  OpfsBlobStore,
   type SnapshotBackend,
 } from '@cabot/storage/browser-chrome';
 import { CapabilityBroker } from '@cabot/policy';
@@ -13,7 +14,15 @@ import { OpenAICompatibleProvider } from '@cabot/providers';
 import type { ModelProvider } from '@cabot/providers';
 import { CabotRuntimeService } from '@cabot/runtime';
 import type { TaskId } from '@cabot/contracts';
-import { BrowserToolExecutor, registerBrowserTools, type BrowserBackend } from '@cabot/tools';
+import {
+  BrowserToolExecutor,
+  WorkspaceToolExecutor,
+  registerBrowserTools,
+  registerWorkspaceTools,
+  type AsyncBlobStore,
+  type BrowserBackend,
+} from '@cabot/tools';
+import type { ToolExecutor } from '@cabot/runtime';
 
 export interface ProviderSettings {
   endpoint: string;
@@ -42,6 +51,9 @@ export const RESEARCH_GRANTS = [
   'browser.navigate',
   'browser.go_back',
   'browser.go_forward',
+  'workspace.write',
+  'workspace.list',
+  'workspace.read',
 ] as const;
 
 export function effectiveBudget(settings: ProviderSettings | null): { maxModelCalls: number; maxToolCalls: number } {
@@ -86,6 +98,7 @@ export type CoordinatorMessage =
   | { type: 'cabot.task-detail'; taskId: string }
   | { type: 'cabot.list-agents' }
   | { type: 'cabot.agent-detail'; agentId: string }
+  | { type: 'cabot.read-artifact'; artifactId: string }
   | { type: 'cabot.remove-agent'; agentId: string }
   | { type: 'cabot.pending-approvals' }
   | { type: 'cabot.decide-approval'; approvalId: string; decision: 'granted' | 'denied' }
@@ -104,6 +117,8 @@ export interface CoordinatorDeps {
   browserBackend: BrowserBackend;
   /** Model provider factory; defaults to the OpenAI-compatible adapter. */
   providerFactory?: (settings: ProviderSettings) => ModelProvider;
+  /** Artifact byte store; defaults to OPFS in the extension. */
+  blobs?: AsyncBlobStore;
 }
 
 /**
@@ -191,6 +206,21 @@ export function createCoordinator(deps: CoordinatorDeps) {
   let broker: CapabilityBroker | undefined;
   let warning: string | null = null;
   const runs = createRunLock();
+  // Artifact bytes for agent-written files; OPFS-backed in the extension.
+  const blobs = deps.blobs ?? new OpfsBlobStore();
+
+  /**
+   * Route a tool call to its executor. Browser tools and workspace file tools
+   * share one gate so the loop stays agnostic of tool families.
+   */
+  function makeExecutor(s: DurableStore, taskId: string, projectId: string, agentId: string): ToolExecutor {
+    const browser = new BrowserToolExecutor(deps.browserBackend, s, taskId, projectId);
+    const workspace = new WorkspaceToolExecutor(blobs, s, taskId, projectId, agentId);
+    return {
+      execute: (toolId, args) =>
+        toolId.startsWith('workspace.') ? workspace.execute(toolId, args) : browser.execute(toolId, args),
+    };
+  }
 
   async function persist(): Promise<void> {
     if (store) await deps.snapshots.save(serializeStore(store));
@@ -220,6 +250,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
     store.reconcileAfterRestart();
     broker = new CapabilityBroker(store);
     registerBrowserTools((t) => broker!.registerTool(t));
+    registerWorkspaceTools((t) => broker!.registerTool(t));
     await persist();
     const switches = (deps.snapshots as unknown as { switches?: string[] }).switches;
     if (switches && switches.length > 0 && !warning) {
@@ -303,7 +334,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
     const provider = makeProvider(settings);
     const project = s.projects.get(task.projectId);
     if (!project) throw new Error('project missing for task');
-    const executor = new BrowserToolExecutor(deps.browserBackend, s, task.id, project.id);
+    const executor = makeExecutor(s, task.id, project.id, task.ownerAgentId);
     const svc = new CabotRuntimeService(s, b, provider, executor);
     // Hold the task lock for the whole run so cancel/send can tell whether a
     // loop is actually in flight.
@@ -348,7 +379,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
     for (const toolId of RESEARCH_GRANTS) {
       b.grant({ principal: { kind: 'core-agent', agentId: agent.id }, toolId, scope: 'task', taskId: task.id });
     }
-    const executor = new BrowserToolExecutor(deps.browserBackend, s, task.id, project.id);
+    const executor = makeExecutor(s, task.id, project.id, task.ownerAgentId);
     const svc = new CabotRuntimeService(s, b, provider, executor);
     await persist();
     const outcome = await runs.runExclusive(task.id, () =>
@@ -385,6 +416,22 @@ export function createCoordinator(deps: CoordinatorDeps) {
         return { agents: queries.listAgents() };
       case 'cabot.agent-detail':
         return { agent: queries.inspectAgent(msg.agentId) };
+      case 'cabot.read-artifact': {
+        const { store: s } = ready();
+        const art = s.artifacts.get(msg.artifactId);
+        if (!art) throw new Error(`unknown artifact ${msg.artifactId}`);
+        const bytes = await blobs.read(art.id);
+        const text = new TextDecoder().decode(bytes);
+        return {
+          artifact: {
+            id: art.id,
+            path: art.path,
+            bytes: art.bytes,
+            content: text.slice(0, 100_000),
+            truncated: text.length > 100_000,
+          },
+        };
+      }
       case 'cabot.remove-agent': {
         const removed = queries.removeAgent(msg.agentId);
         await persist();
