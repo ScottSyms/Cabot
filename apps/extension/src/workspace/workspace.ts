@@ -125,6 +125,12 @@ export function renderWorkspace(root: HTMLElement, client: PanelClient): { refre
       return;
     }
     composer.style.display = '';
+    const terminal = view.task
+      ? ['COMPLETE', 'FAILED', 'CANCELLED'].includes(view.task.status)
+      : false;
+    msgInput.placeholder = terminal
+      ? 'Continue this agent with a new prompt (fresh step budget)…'
+      : 'Message this agent… (Enter to send, Shift+Enter for newline)';
     const title = el('h2', view.name);
     const badge = el('span', view.agent.status, { class: statusClass(view.agent.status) });
     const budget = budgetLabel(view.agent);

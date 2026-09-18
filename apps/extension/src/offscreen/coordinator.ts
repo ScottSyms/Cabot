@@ -10,6 +10,7 @@ import {
 } from '@cabot/storage/browser-chrome';
 import { CapabilityBroker } from '@cabot/policy';
 import { OpenAICompatibleProvider } from '@cabot/providers';
+import type { ModelProvider } from '@cabot/providers';
 import { CabotRuntimeService } from '@cabot/runtime';
 import type { TaskId } from '@cabot/contracts';
 import { BrowserToolExecutor, registerBrowserTools, type BrowserBackend } from '@cabot/tools';
@@ -101,6 +102,8 @@ export interface CoordinatorDeps {
   settings: SettingsStore;
   /** Browser backend: relay-to-supervisor in the extension, fake in tests. */
   browserBackend: BrowserBackend;
+  /** Model provider factory; defaults to the OpenAI-compatible adapter. */
+  providerFactory?: (settings: ProviderSettings) => ModelProvider;
 }
 
 /**
@@ -229,6 +232,12 @@ export function createCoordinator(deps: CoordinatorDeps) {
     return { store, broker };
   }
 
+  function makeProvider(settings: ProviderSettings): ModelProvider {
+    return deps.providerFactory
+      ? deps.providerFactory(settings)
+      : new OpenAICompatibleProvider({ endpoint: settings.endpoint, apiKey: settings.apiKey, modelId: settings.modelId });
+  }
+
   /** Replaceable after loss: re-boot from durable state. */
   async function reboot(): Promise<void> {
     store = undefined;
@@ -291,7 +300,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
     if (!task) throw new Error(`unknown task ${taskId}`);
     const settings = await deps.settings.load();
     if (!settings) throw new Error('provider not configured — open Settings first');
-    const provider = new OpenAICompatibleProvider({ endpoint: settings.endpoint, apiKey: settings.apiKey, modelId: settings.modelId });
+    const provider = makeProvider(settings);
     const project = s.projects.get(task.projectId);
     if (!project) throw new Error('project missing for task');
     const executor = new BrowserToolExecutor(deps.browserBackend, s, task.id, project.id);
@@ -322,7 +331,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
     const { store: s, broker: b } = ready();
     const settings = await deps.settings.load();
     if (!settings) throw new Error('provider not configured — open Settings first');
-    const provider = new OpenAICompatibleProvider({ endpoint: settings.endpoint, apiKey: settings.apiKey, modelId: settings.modelId });
+    const provider = makeProvider(settings);
 
     let project = [...s.projects.values()].find((p) => p.name === projectName);
     if (!project) project = s.createProject(projectName);
@@ -411,6 +420,20 @@ export function createCoordinator(deps: CoordinatorDeps) {
         // Each run creates its own task; the lock is taken inside runSummary.
         return runSummary(msg.objective, msg.projectName);
       case 'cabot.send-message': {
+        const { store: s } = ready();
+        const target = s.tasks.get(msg.taskId);
+        if (!target) throw new Error(`unknown task ${msg.taskId}`);
+        // Finished tasks don't accept plain messages: start a continuation
+        // with its own task and a fresh step budget, then drive it.
+        if (['COMPLETE', 'FAILED', 'CANCELLED'].includes(target.status)) {
+          const followUpId = queries.startFollowUp(msg.taskId, msg.text);
+          await persist();
+          emit('follow-up-started', followUpId, { from: msg.taskId });
+          return {
+            taskId: followUpId,
+            ...(await continueTask(followUpId) as Record<string, unknown>),
+          };
+        }
         queries.sendUserMessage(msg.taskId, msg.text);
         await persist();
         if (runs.isRunning(msg.taskId)) {

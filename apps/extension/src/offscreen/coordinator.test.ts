@@ -328,3 +328,49 @@ describe('default research grants', () => {
     expect(RESEARCH_GRANTS).not.toContain('browser.submit');
   });
 });
+
+describe('continuation from a completed task', () => {
+  it('routes a message to a follow-up task with a fresh budget', async () => {
+    const { FakeModelProvider } = await import('@cabot/providers');
+    const snapshots = new MemorySnapshotBackend();
+    const provider = new FakeModelProvider();
+    const coord = createCoordinator({
+      snapshots,
+      settings: settings(),
+      browserBackend: new FakeBrowserBackend(),
+      providerFactory: () => provider,
+    });
+    await coord.boot();
+    const s = coord.ready().store;
+    const project = s.createProject('P');
+    const agent = s.createAgent({
+      projectId: project.id, role: 'researcher', objective: 'o', status: 'COMPLETED',
+      modelConfig: { providerId: 'fake', modelId: 'fake-1' }, skillIds: [],
+      budget: { maxModelCalls: 50, maxToolCalls: 50 }, workspaceMounts: [], delegationDepth: 0,
+    });
+    const task = s.createTask({ projectId: project.id, ownerAgentId: agent.id, title: 'Research', objective: 'O' });
+    s.transitionTask(task.id, 'READY', 'r');
+    s.transitionTask(task.id, 'RUNNING', 'r');
+    s.appendConversation(task.id, agent.id, 'agent', 'Here is the initial summary.');
+    s.transitionTask(task.id, 'COMPLETE', 'done');
+    s.setAgentStatus(agent.id, 'COMPLETED');
+    s.agents.get(agent.id)!.spent.modelCalls = 9;
+    await coord.persist();
+
+    provider.script(task.id, [{ kind: 'done', summary: 'unused' }]);
+    // The follow-up task id is unknown ahead of time; FakeModelProvider
+    // returns "done" for unscripted tasks, which is what we want here.
+    const res = (await coord.handleMessage({
+      type: 'cabot.send-message',
+      taskId: task.id,
+      text: 'Now compare with German coverage.',
+    })) as { taskId: string; outcome?: { status: string } };
+
+    expect(res.taskId).not.toBe(task.id);
+    const followUp = s.tasks.get(res.taskId)!;
+    expect(followUp.ownerAgentId).toBe(agent.id);
+    expect(followUp.status).toBe('COMPLETE');
+    expect(s.agents.get(agent.id)!.spent.modelCalls).toBe(1); // fresh budget, one new call
+    expect(s.tasks.get(task.id)!.status).toBe('COMPLETE'); // original untouched
+  });
+});

@@ -2,7 +2,7 @@
 // The side panel consumes this; it holds no agent logic itself.
 import type { Agent, AgentId, ProjectId, Task, TaskId } from '@cabot/contracts';
 import type { ModelProvider } from '@cabot/providers';
-import { DurableStore } from '@cabot/storage/browser-chrome';
+import { DurableStore, newId } from '@cabot/storage/browser-chrome';
 import { CapabilityBroker } from '@cabot/policy';
 import { runUntilSettled, syncAgentToTask, type ToolExecutor, type TurnOptions } from './loop.js';
 import {
@@ -223,6 +223,50 @@ export class CabotRuntimeService {
       resumed.push(task.id);
     }
     return resumed;
+  }
+
+  /**
+   * Begin a follow-up on a finished task: a new task owned by the same agent,
+   * granted the same capabilities, seeded with recent transcript context, and
+   * a fresh step budget. The agent moves back to READY so the loop can run.
+   * This is how a completed conversation continues instead of dead-ending.
+   */
+  startFollowUp(previousTaskId: TaskId, text: string): TaskId {
+    const prev = this.store.tasks.get(previousTaskId);
+    if (!prev) throw new Error(`unknown task ${previousTaskId}`);
+    if (!['COMPLETE', 'FAILED', 'CANCELLED'].includes(prev.status)) {
+      throw new Error(`task ${prev.status} is still active; send a normal message instead`);
+    }
+    const trimmed = text.trim().slice(0, 4000);
+    if (!trimmed) throw new Error('message is empty');
+    const agent = this.store.agents.get(prev.ownerAgentId);
+    if (!agent) throw new Error(`agent missing for task ${previousTaskId}`);
+
+    const task = this.store.createTask({
+      projectId: prev.projectId,
+      ownerAgentId: prev.ownerAgentId,
+      title: trimmed.slice(0, 80),
+      objective: trimmed,
+    });
+    // Carry recent user/agent turns forward so the follow-up has continuity,
+    // but not stale tool payloads or the old objective.
+    for (const m of this.store.forTaskConversation(prev.id, 200).filter((x) => x.role !== 'tool').slice(-30)) {
+      this.store.appendConversation(task.id, prev.ownerAgentId, m.role, m.text);
+    }
+    this.store.appendConversation(task.id, prev.ownerAgentId, 'user', trimmed);
+    // Fresh step budget for the new task; limits are unchanged.
+    for (const key of Object.keys(agent.spent) as (keyof typeof agent.spent)[]) {
+      agent.spent[key] = 0;
+    }
+    this.store.setAgentStatus(prev.ownerAgentId, 'READY');
+    // Reuse the prior task's capability grants for this task.
+    for (const g of [...this.store.grants.values()]) {
+      if (g.revoked || g.taskId !== prev.id) continue;
+      const id = newId('grant');
+      this.store.grants.set(id, { ...g, id, taskId: task.id });
+    }
+    this.store.appendEvent(task.id, 'task.follow-up', `continued from ${prev.id}`);
+    return task.id;
   }
 
   /** Run the checkpointed loop for a task (offscreen worker entry point). */

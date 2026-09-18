@@ -189,3 +189,50 @@ describe('interrupted-task recovery', () => {
     expect(store.events.some((e) => e.taskId === dirty.id && e.summary.includes('result unknown'))).toBe(true);
   });
 });
+
+describe('follow-up on a completed task', () => {
+  it('creates a new task with a fresh budget, cloned grants, and context', async () => {
+    const { store, broker, svc, agent, task, model, executed } = setup();
+    model.script(task.id, [{ kind: 'done', summary: 'initial research done' }]);
+    broker.grant({ principal: { kind: 'core-agent', agentId: agent.id }, toolId: 'browser.read_page', scope: 'task', taskId: task.id });
+    expect((await svc.runTask(task.id, agent.id)).status).toBe('complete');
+    expect(store.agents.get(agent.id)?.spent.modelCalls).toBe(1);
+
+    // Spend a tool call so the reset is observable.
+    store.agents.get(agent.id)!.spent.toolCalls = 4;
+    const followUp = svc.startFollowUp(task.id, 'Now compare it with the German coverage.');
+
+    const newTask = store.tasks.get(followUp)!;
+    expect(newTask.ownerAgentId).toBe(agent.id);
+    expect(newTask.projectId).toBe(store.tasks.get(task.id)!.projectId);
+    expect(newTask.status).toBe('CREATED');
+
+    // Fresh step budget.
+    const spent = store.agents.get(agent.id)!.spent;
+    expect(spent.modelCalls).toBe(0);
+    expect(spent.toolCalls).toBe(0);
+    expect(store.agents.get(agent.id)?.status).toBe('READY');
+
+    // Grants carried over, bound to the new task.
+    const cloned = [...store.grants.values()].filter((g) => g.taskId === followUp);
+    expect(cloned.map((g) => g.toolId)).toContain('browser.read_page');
+
+    // Context carried forward: prior turns plus the new prompt.
+    const conv = store.forTaskConversation(followUp);
+    expect(conv.some((m) => m.role === 'user' && m.text === 'Now compare it with the German coverage.')).toBe(true);
+    expect(conv.some((m) => m.text.includes('initial research done'))).toBe(true);
+
+    // And it runs to completion under the same agent.
+    model.script(followUp, [{ kind: 'done', summary: 'comparison complete' }]);
+    expect((await svc.runTask(followUp, agent.id)).status).toBe('complete');
+    void broker;
+    void executed;
+  });
+
+  it('refuses to start a follow-up from an active task', () => {
+    const { store, svc, agent, task } = setup();
+    void store;
+    void agent;
+    expect(() => svc.startFollowUp(task.id, 'more')).toThrow(/still active/);
+  });
+});
