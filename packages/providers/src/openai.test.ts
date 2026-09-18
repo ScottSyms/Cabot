@@ -68,7 +68,11 @@ describe('openai-compatible provider', () => {
   it('rejects non-HTTPS remote endpoints and surfaces HTTP errors', async () => {
     expect(() => new OpenAICompatibleProvider({ endpoint: 'http://evil.example.com/v1', modelId: 'm' })).toThrow(/HTTPS/);
     stubFetch({ error: 'nope' }, 500);
-    const provider = new OpenAICompatibleProvider({ endpoint: 'https://api.example.com/v1', modelId: 'm' });
+    const provider = new OpenAICompatibleProvider({
+      endpoint: 'https://api.example.com/v1',
+      modelId: 'm',
+      retry: { attempts: 3, baseDelayMs: 1 },
+    });
     await expect(provider.decide(baseRequest)).rejects.toThrow(/500/);
   });
 
@@ -87,8 +91,55 @@ describe('openai-compatible provider', () => {
     vi.stubGlobal('fetch', async () => {
       throw new TypeError('Failed to fetch');
     });
-    const provider = new OpenAICompatibleProvider({ endpoint: 'https://openrouter.ai/api/v1', modelId: 'm' });
+    const provider = new OpenAICompatibleProvider({
+      endpoint: 'https://openrouter.ai/api/v1',
+      modelId: 'm',
+      retry: { attempts: 3, baseDelayMs: 1 },
+    });
     await expect(provider.decide(baseRequest)).rejects.toThrow(/unreachable.*openrouter.*permits this host/);
+  });
+
+  it('retries a transient network blip and succeeds', async () => {
+    let n = 0;
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', async (url: string) => {
+      calls.push(url);
+      n += 1;
+      if (n === 1) throw new TypeError('Failed to fetch');
+      return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => ({ choices: [{ message: { content: 'recovered' }, finish_reason: 'stop' }] }) } as unknown as Response;
+    });
+    const provider = new OpenAICompatibleProvider({
+      endpoint: 'https://openrouter.ai/api/v1',
+      modelId: 'm',
+      retry: { attempts: 3, baseDelayMs: 1 },
+    });
+    const res = await provider.decide(baseRequest);
+    expect(res.action).toEqual({ kind: 'done', summary: 'recovered' });
+    expect(calls).toHaveLength(2);
+  });
+
+  it('retries retryable server status then succeeds; does not retry 401', async () => {
+    let n = 0;
+    vi.stubGlobal('fetch', async () => {
+      n += 1;
+      if (n === 1) return { ok: false, status: 503, headers: { get: () => 'text/html' }, text: async () => 'busy' } as unknown as Response;
+      return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => ({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) } as unknown as Response;
+    });
+    const provider = new OpenAICompatibleProvider({
+      endpoint: 'http://localhost:11434/v1',
+      modelId: 'm',
+      retry: { attempts: 3, baseDelayMs: 1 },
+    });
+    await provider.decide(baseRequest);
+    expect(n).toBe(2);
+
+    let authCalls = 0;
+    vi.stubGlobal('fetch', async () => {
+      authCalls += 1;
+      return { ok: false, status: 401, headers: { get: () => 'application/json' }, text: async () => 'bad key' } as unknown as Response;
+    });
+    await expect(provider.decide(baseRequest)).rejects.toThrow(/401/);
+    expect(authCalls).toBe(1); // permanent failure is not retried
   });
 
   it('captures assistant text on tool-call turns and sends transcript context', async () => {

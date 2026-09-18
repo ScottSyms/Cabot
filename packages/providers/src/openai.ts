@@ -11,6 +11,15 @@ export interface OpenAICompatibleConfig {
   apiKey?: string;
   modelId: string;
   timeoutMs?: number;
+  /** Transient-failure retry policy for model calls. */
+  retry?: { attempts?: number; baseDelayMs?: number };
+}
+
+/** Statuses worth retrying: transient server/rate-limit conditions. */
+const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 }
 
 interface ChatToolCall {
@@ -34,6 +43,38 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
   async listModels(): Promise<ModelDescriptor[]> {
     return [{ id: this.config.modelId, capabilities: ['tools'] }];
+  }
+
+  /**
+   * POST with bounded retries and linear backoff. A single transient network
+   * blip must not end a long-running task; permanent failures (4xx) are
+   * returned immediately for the caller to report.
+   */
+  private async postWithRetry(
+    url: string,
+    init: Omit<RequestInit, 'signal'>,
+    ctrl: AbortController,
+  ): Promise<Response> {
+    const attempts = Math.max(1, this.config.retry?.attempts ?? 3);
+    const baseDelay = this.config.retry?.baseDelayMs ?? 500;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        const res = await fetch(url, { ...init, signal: ctrl.signal });
+        if (RETRYABLE_STATUS.has(res.status) && attempt < attempts) {
+          await delay(baseDelay * attempt);
+          continue;
+        }
+        return res;
+      } catch (e) {
+        lastError = e;
+        if (attempt < attempts) {
+          await delay(baseDelay * attempt);
+          continue;
+        }
+      }
+    }
+    throw lastError ?? new Error('model request failed');
   }
 
   async decide(request: ModelRequest): Promise<ModelResponse> {
@@ -71,25 +112,32 @@ export class OpenAICompatibleProvider implements ModelProvider {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), this.config.timeoutMs ?? 60_000);
     let res: Response;
+    const url = `${base}/chat/completions`;
+    const attempts = Math.max(1, this.config.retry?.attempts ?? 3);
     try {
-      res = await fetch(`${base}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          ...(this.config.apiKey ? { authorization: `Bearer ${this.config.apiKey}` } : {}),
+      res = await this.postWithRetry(
+        url,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            ...(this.config.apiKey ? { authorization: `Bearer ${this.config.apiKey}` } : {}),
+          },
+          body: JSON.stringify(body),
         },
-        body: JSON.stringify(body),
-        signal: ctrl.signal,
-      });
+        ctrl,
+      );
     } catch (e) {
-      if (e instanceof DOMException && e.name === 'AbortError') throw new Error('model request timed out');
+      if (e instanceof DOMException && e.name === 'AbortError') {
+        throw new Error(`model request timed out after ${attempts} attempt(s) (${url})`);
+      }
       throw new Error(
-        `model endpoint unreachable (${base}): ${e instanceof Error ? e.message : String(e)}. Check network access and that the extension permits this host.`,
+        `model endpoint unreachable (${base}) after ${attempts} attempt(s): ` +
+          `${e instanceof Error ? e.message : String(e)}. Check network access and that the extension permits this host.`,
       );
     } finally {
       clearTimeout(timer);
     }
-    const url = `${base}/chat/completions`;
     if (!res.ok) {
       let detail = '';
       try {
