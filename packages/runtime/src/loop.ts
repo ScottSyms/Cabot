@@ -233,6 +233,23 @@ export async function runAgentTurn(
     agentId,
   };
   const evaluation = broker.evaluate(toolRequest);
+  // Denied attempts create no operation, so the repeat guard below never sees
+  // them. Stop a model that keeps asking for an ungranted tool.
+  const priorDenials = store.events.filter(
+    (e) => e.taskId === taskId && e.type === 'tool.failed' && e.summary.includes(`${action.toolId} denied`),
+  ).length;
+  if (priorDenials >= MAX_IDENTICAL_ACTIONS) {
+    const reason = `${action.toolId} denied ${priorDenials} times; the agent keeps retrying an ungranted tool`;
+    store.appendEvent(taskId, 'task.blocked', reason);
+    store.appendConversation(taskId, agentId, 'agent', `Stopped: ${reason}. Send a message with new guidance to continue.`);
+    try {
+      store.transitionTask(taskId, 'SUSPENDED', 'repeated denied tool calls');
+    } catch {
+      store.commitCheckpoint(taskId);
+    }
+    syncAgentToTask(store, taskId, agentId);
+    return { status: 'suspended', reason };
+  }
   // A previously granted approval bound to these exact arguments is consumed
   // here, so an approved loop resumes without re-prompting. The binding is
   // rechecked at dispatch; anything changed falls back to a fresh approval.
@@ -259,7 +276,16 @@ export async function runAgentTurn(
       return { status: 'approval-required', approvalId: evaluation.approvalId! };
     }
   } else if (!evaluation.allowed) {
+    // Record the denial as a tool result so the model sees it and can switch
+    // to a granted tool, rather than silently retrying a blocked one.
     store.appendEvent(taskId, 'tool.failed', `${action.toolId} denied: ${evaluation.reason}`);
+    store.appendConversation(
+      taskId,
+      agentId,
+      'tool',
+      `${action.toolId} — denied: ${evaluation.reason}`,
+      { toolId: action.toolId, ok: false, result: `Denied: ${evaluation.reason}. Use only tools you were granted.` },
+    );
     store.commitCheckpoint(taskId);
     return { status: 'continue' };
   }
@@ -298,6 +324,13 @@ export async function runAgentTurn(
   const dispatch = broker.authorizeDispatch(toolRequest, approvalId);
   if (!dispatch.allowed) {
     store.appendEvent(taskId, 'tool.failed', `${action.toolId} dispatch denied: ${dispatch.reason}`);
+    store.appendConversation(
+      taskId,
+      agentId,
+      'tool',
+      `${action.toolId} — dispatch denied: ${dispatch.reason}`,
+      { toolId: action.toolId, ok: false, result: `Denied at dispatch: ${dispatch.reason}` },
+    );
     store.commitCheckpoint(taskId);
     return { status: 'continue' };
   }

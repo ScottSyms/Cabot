@@ -317,3 +317,14 @@ describe('turn cap derives from budget', () => {
     expect(turnCapFor({ budget: {} })).toBeGreaterThanOrEqual(25);
   });
 });
+
+describe('default research grants', () => {
+  it('includes navigation but not state-mutating or consequential tools', async () => {
+    const { RESEARCH_GRANTS } = await import('./coordinator.js');
+    expect(RESEARCH_GRANTS).toContain('browser.navigate');
+    expect(RESEARCH_GRANTS).toContain('browser.read_page');
+    expect(RESEARCH_GRANTS).not.toContain('browser.click');
+    expect(RESEARCH_GRANTS).not.toContain('browser.type');
+    expect(RESEARCH_GRANTS).not.toContain('browser.submit');
+  });
+});

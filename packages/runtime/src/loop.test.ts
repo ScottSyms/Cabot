@@ -441,3 +441,34 @@ describe('tool results reach the model', () => {
     expect(toolMsg).toMatchObject({ ok: false, result: 'scripting denied on this tab' });
   });
 });
+
+describe('tool denials are visible to the model', () => {
+  it('records a denial as a tool result and stops repeated retries', async () => {
+    const { store, broker, agent, task } = setup();
+    // Registered but never granted: the broker must deny it.
+    broker.registerTool({
+      id: 'page.visit', source: 'builtin', name: 'visit', description: 'v',
+      inputSchema: { type: 'object' }, capabilityClass: 'reversible', provenance: 'builtin',
+    });
+    const seen: (string | undefined)[] = [];
+    let turn = 0;
+    const spy = {
+      id: 'spy',
+      listModels: async () => [],
+      decide: async (req: Parameters<FakeModelProvider['decide']>[0]) => {
+        seen.push(req.recentToolResults?.[req.recentToolResults.length - 1]?.result);
+        turn += 1;
+        return { action: { kind: 'tool' as const, toolId: 'page.visit', args: { n: turn }, argsHash: `h${turn}`, idempotencyKey: `k${turn}` } };
+      },
+    };
+    const svc = new CabotRuntimeService(store, broker, spy, { execute: async () => ({ ok: true }) });
+    const outcome = await svc.runTask(task.id, agent.id, 10);
+    // Three denials recorded, then the guard suspends instead of looping.
+    expect(outcome.status).toBe('suspended');
+    expect(store.tasks.get(task.id)?.status).toBe('SUSPENDED');
+    const denials = store.forTaskConversation(task.id).filter((m) => m.role === 'tool' && m.ok === false);
+    expect(denials.length).toBeGreaterThanOrEqual(3);
+    // By the second turn the model can see the denial reason.
+    expect(seen[1]).toContain('no grant');
+  });
+});

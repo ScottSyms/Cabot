@@ -26,6 +26,23 @@ export interface ProviderSettings {
 
 export const DEFAULT_BUDGET = { maxModelCalls: 60, maxToolCalls: 150, maxRuntimeMinutes: 30 };
 
+/**
+ * Tools a research task receives without asking: page inspection (read-only)
+ * and navigation (reversible). Click/type/select/scroll and submit are
+ * deliberately excluded — they can cause external effects.
+ */
+export const RESEARCH_GRANTS = [
+  'browser.list_tabs',
+  'browser.get_active_tab',
+  'browser.read_page',
+  'browser.read_selection',
+  'browser.get_links',
+  'browser.get_accessibility_tree',
+  'browser.navigate',
+  'browser.go_back',
+  'browser.go_forward',
+] as const;
+
 export function effectiveBudget(settings: ProviderSettings | null): { maxModelCalls: number; maxToolCalls: number } {
   return {
     maxModelCalls: settings?.budget?.maxModelCalls ?? DEFAULT_BUDGET.maxModelCalls,
@@ -316,7 +333,10 @@ export function createCoordinator(deps: CoordinatorDeps) {
       workspaceMounts: [], delegationDepth: 0,
     });
     const task = s.createTask({ projectId: project.id, ownerAgentId: agent.id, title: objective.slice(0, 80), objective });
-    for (const toolId of ['browser.list_tabs', 'browser.get_active_tab', 'browser.read_page', 'browser.read_selection', 'browser.get_links']) {
+    // Default research grants: read-only inspection plus reversible navigation.
+    // Navigating is how research actually happens; state-mutating (click/type)
+    // and consequential (submit) tools stay ungranted and out of reach.
+    for (const toolId of RESEARCH_GRANTS) {
       b.grant({ principal: { kind: 'core-agent', agentId: agent.id }, toolId, scope: 'task', taskId: task.id });
     }
     const executor = new BrowserToolExecutor(deps.browserBackend, s, task.id, project.id);
