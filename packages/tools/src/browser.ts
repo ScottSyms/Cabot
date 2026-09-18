@@ -91,7 +91,8 @@ export const BROWSER_READ_TOOLS: CabotTool[] = [
 export const BROWSER_WRITE_TOOLS: CabotTool[] = [
   {
     id: 'browser.navigate', source: 'builtin', name: 'navigate',
-    description: 'Navigate a tab to an approved URL.',
+    description:
+      'Open an http(s) URL in a tab. Omit tabId to open a new tab; non-web URLs (chrome://, chrome-extension://, file://) are refused.',
     inputSchema: { type: 'object', properties: { url: { type: 'string' }, tabId: { type: 'string' } }, required: ['url'] },
     capabilityClass: 'reversible', provenance: 'builtin',
   },

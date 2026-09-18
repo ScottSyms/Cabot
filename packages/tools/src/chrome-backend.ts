@@ -1,11 +1,22 @@
 // Privileged backend for the extension supervisor context.
 // Runs where chrome.tabs/chrome.scripting exist; never in the model context.
 // All results are untrusted page data — provenance-tagged by the executor.
+//
+// Only real web pages (http/https) are exposed. The extension's own pages
+// (chrome-extension://…), chrome:// internal pages, and other privileged
+// schemes cannot be scripted and must never become agent targets.
 import type { BrowserBackend, PageLink, PageSnapshot, TabInfo } from './browser.js';
 
+interface RawTab {
+  id?: number;
+  url?: string;
+  title?: string;
+}
+
 interface ChromeTabs {
-  query(q: Record<string, unknown>): Promise<{ id?: number; url?: string; title?: string }[]>;
-  update(tabId: number, props: { url: string }): Promise<{ id?: number; url?: string; title?: string }>;
+  query(q: Record<string, unknown>): Promise<RawTab[]>;
+  update(tabId: number, props: { url: string }): Promise<RawTab>;
+  create(props: { url: string }): Promise<RawTab>;
   goBack(tabId?: number): Promise<void>;
   goForward(tabId?: number): Promise<void>;
 }
@@ -21,6 +32,11 @@ function chromeApi(): { tabs: ChromeTabs; scripting: ChromeScripting } {
   return { tabs: g.chrome.tabs, scripting: g.chrome.scripting };
 }
 
+/** A tab the agent may read or act on: an ordinary http(s) web page. */
+export function isReadableWebUrl(url: string | undefined): boolean {
+  return typeof url === 'string' && /^https?:\/\//i.test(url);
+}
+
 function originOf(url: string): string {
   try {
     return new URL(url).origin;
@@ -29,29 +45,64 @@ function originOf(url: string): string {
   }
 }
 
+function toInfo(t: RawTab): TabInfo {
+  return {
+    id: String(t.id),
+    url: t.url ?? '',
+    title: t.title ?? '',
+    origin: originOf(t.url ?? ''),
+  };
+}
+
+function readableTabs(raw: RawTab[]): RawTab[] {
+  return raw.filter((t) => t.id !== undefined && isReadableWebUrl(t.url));
+}
+
 export class ChromeBrowserBackend implements BrowserBackend {
   async listTabs(): Promise<TabInfo[]> {
     const { tabs } = chromeApi();
-    const raw = await tabs.query({});
-    return raw.map((t) => ({
-      id: String(t.id ?? ''),
-      url: t.url ?? '',
-      title: t.title ?? '',
-      origin: originOf(t.url ?? ''),
-    }));
+    return readableTabs(await tabs.query({})).map(toInfo);
   }
 
   async getActiveTab(): Promise<TabInfo> {
     const { tabs } = chromeApi();
-    const raw = await tabs.query({ active: true, lastFocusedWindow: true });
-    const t = raw[0];
-    if (!t) throw new Error('no active tab');
-    return { id: String(t.id ?? ''), url: t.url ?? '', title: t.title ?? '', origin: originOf(t.url ?? '') };
+    // Prefer the focused web tab; if the focused tab is Cabot's own UI or a
+    // browser page, fall back to any readable tab so a run can still proceed.
+    const active = (await tabs.query({ active: true, lastFocusedWindow: true })).find((t) =>
+      isReadableWebUrl(t.url),
+    );
+    if (active) return toInfo(active);
+    const anyWeb = readableTabs(await tabs.query({}))[0];
+    if (anyWeb) return toInfo(anyWeb);
+    throw new Error('no web page tab is open — navigate to a website first');
+  }
+
+  /**
+   * Resolve a target tab id, refusing non-web pages. With no id, uses the
+   * active web tab. Never returns the extension's own pages.
+   */
+  private async resolveWebTabId(tabId?: string): Promise<number> {
+    const { tabs } = chromeApi();
+    const raw = await tabs.query({});
+    const norm = tabId?.trim();
+    if (norm) {
+      const n = Number(norm);
+      if (!Number.isFinite(n)) throw new Error(`invalid tab id ${tabId}`);
+      const t = raw.find((x) => x.id === n);
+      if (!t) throw new Error(`no tab with id ${n}`);
+      if (!isReadableWebUrl(t.url)) {
+        throw new Error(`tab ${n} is not a web page (${t.url ?? 'unknown'}) and cannot be read`);
+      }
+      return n;
+    }
+    const active = raw.find((x) => x.id !== undefined && isReadableWebUrl(x.url));
+    if (!active) throw new Error('no web page tab is open — navigate to a website first');
+    return active.id!;
   }
 
   async readPage(tabId?: string): Promise<PageSnapshot> {
     const { scripting } = chromeApi();
-    const id = Number(tabId ?? (await this.getActiveTab()).id);
+    const id = await this.resolveWebTabId(tabId);
     const [res] = await scripting.executeScript({
       target: { tabId: id },
       func: () => ({
@@ -67,7 +118,7 @@ export class ChromeBrowserBackend implements BrowserBackend {
 
   async readSelection(tabId?: string): Promise<{ text: string; origin: string }> {
     const { scripting } = chromeApi();
-    const id = Number(tabId ?? (await this.getActiveTab()).id);
+    const id = await this.resolveWebTabId(tabId);
     const [res] = await scripting.executeScript({
       target: { tabId: id },
       func: () => ({ text: getSelection()?.toString() ?? '', url: location.href }),
@@ -80,37 +131,46 @@ export class ChromeBrowserBackend implements BrowserBackend {
     return (await this.readPage(tabId)).links;
   }
 
-  async getAccessibilityTree(): Promise<unknown> {
-    // Full AX-tree extraction lands with the write-path tools; read-only
-    // slice returns a document placeholder to keep the contract stable.
-    const page = await this.readPage();
+  async getAccessibilityTree(tabId?: string): Promise<unknown> {
+    const page = await this.readPage(tabId);
     return { role: 'document', name: page.title, url: page.url };
   }
 
-  private async tabNumericId(tabId?: string): Promise<number> {
-    if (tabId !== undefined) {
-      const n = Number(tabId);
-      if (!Number.isFinite(n)) throw new Error(`invalid tab id ${tabId}`);
-      return n;
-    }
-    return Number((await this.getActiveTab()).id);
-  }
-
+  /**
+   * Navigate a web tab, or open a new one when the requested target is not a
+   * usable web tab. Refuses non-web URLs outright.
+   */
   async navigate(url: string, tabId?: string): Promise<TabInfo> {
+    if (!isReadableWebUrl(url)) throw new Error(`refusing to navigate to non-web URL ${url}`);
     const { tabs } = chromeApi();
-    const id = await this.tabNumericId(tabId);
-    const t = await tabs.update(id, { url });
-    return { id: String(t.id ?? id), url: t.url ?? url, title: t.title ?? '', origin: originOf(t.url ?? url) };
+    const norm = tabId?.trim();
+    let targetId: number | undefined;
+    if (norm) {
+      const n = Number(norm);
+      if (Number.isFinite(n)) {
+        const t = (await tabs.query({})).find((x) => x.id === n);
+        if (t && isReadableWebUrl(t.url)) targetId = n;
+      }
+    } else {
+      const active = (await tabs.query({ active: true, lastFocusedWindow: true })).find((t) =>
+        isReadableWebUrl(t.url),
+      );
+      if (active?.id !== undefined) targetId = active.id;
+    }
+    const t = targetId !== undefined ? await tabs.update(targetId, { url }) : await tabs.create({ url });
+    return toInfo(t);
   }
 
   async goBack(tabId?: string): Promise<void> {
     const { tabs } = chromeApi();
-    await tabs.goBack(tabId === undefined ? undefined : Number(tabId));
+    const norm = tabId?.trim();
+    await tabs.goBack(norm ? Number(norm) : undefined);
   }
 
   async goForward(tabId?: string): Promise<void> {
     const { tabs } = chromeApi();
-    await tabs.goForward(tabId === undefined ? undefined : Number(tabId));
+    const norm = tabId?.trim();
+    await tabs.goForward(norm ? Number(norm) : undefined);
   }
 
   /** Resolve a semantic element id and verify its text before acting. */
@@ -151,20 +211,20 @@ export class ChromeBrowserBackend implements BrowserBackend {
   }
 
   async click(elementId: string, expectedText: string, tabId?: string): Promise<void> {
-    await this.actOnElement(await this.tabNumericId(tabId), elementId, expectedText, 'click');
+    await this.actOnElement(await this.resolveWebTabId(tabId), elementId, expectedText, 'click');
   }
 
   async typeText(elementId: string, expectedText: string, text: string, tabId?: string): Promise<void> {
-    await this.actOnElement(await this.tabNumericId(tabId), elementId, expectedText, 'type', text);
+    await this.actOnElement(await this.resolveWebTabId(tabId), elementId, expectedText, 'type', text);
   }
 
   async select(elementId: string, expectedText: string, value: string, tabId?: string): Promise<void> {
-    await this.actOnElement(await this.tabNumericId(tabId), elementId, expectedText, 'select', value);
+    await this.actOnElement(await this.resolveWebTabId(tabId), elementId, expectedText, 'select', value);
   }
 
   async scroll(direction: 'up' | 'down', tabId?: string): Promise<void> {
     const { scripting } = chromeApi();
-    const id = await this.tabNumericId(tabId);
+    const id = await this.resolveWebTabId(tabId);
     await scripting.executeScript({
       target: { tabId: id },
       func: () => window.scrollBy(0, 600),
